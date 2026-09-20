@@ -8,6 +8,10 @@ pub const PipeError = error{
 } || std.posix.UnexpectedError;
 
 pub fn close(fd: std.posix.fd_t) void {
+    if (@import("builtin").os.tag == .windows) {
+        std.os.windows.CloseHandle(fd);
+        return;
+    }
     switch (std.posix.errno(std.posix.system.close(fd))) {
         .BADF => unreachable, // Always a race condition
         else => {}, // Includes EINTR, see std.posix source in 0.15.2

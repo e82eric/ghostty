@@ -382,6 +382,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    windows: extern struct { hwnd: *anyopaque },
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -398,6 +399,7 @@ pub const Platform = union(PlatformTag) {
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
+        windows: extern struct { hwnd: ?*anyopaque },
         macos: extern struct {
             nsview: ?*anyopaque,
         },
@@ -411,6 +413,10 @@ pub const Platform = union(PlatformTag) {
     pub fn init(tag_int: c_int, c_platform: C) !Platform {
         const tag = std.enums.fromInt(PlatformTag, tag_int) orelse return error.InvalidEnumTag;
         return switch (tag) {
+            .windows => if (builtin.os.tag == .windows)
+                .{ .windows = .{ .hwnd = c_platform.windows.hwnd orelse return error.HWNDMustBeSet } }
+            else
+                error.UnsupportedPlatform,
             .macos => if (MacOS != void) macos: {
                 const config = c_platform.macos;
                 const nsview = objc.Object.fromId(config.nsview orelse
@@ -434,6 +440,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    windows = 3,
 };
 
 pub const EnvVar = extern struct {

@@ -2,6 +2,14 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+extern fn ghostty_wgl_create(*anyopaque) ?*anyopaque;
+extern fn ghostty_wgl_enter(*anyopaque, c_int) c_int;
+extern fn ghostty_wgl_leave() void;
+extern fn ghostty_wgl_destroy(*anyopaque) void;
+extern fn ghostty_wgl_swap(*anyopaque) c_int;
+extern fn ghostty_wgl_proc([*:0]const u8) ?*const anyopaque;
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
@@ -47,13 +55,23 @@ blending: configpkg.Config.AlphaBlending,
 /// The shared render device.
 device: *const Device,
 
-egl_context: *gl.egl.Context,
+egl_context: *gl.egl.Context = undefined,
+wgl_context: ?*anyopaque = null,
+wgl_vsync: bool = true,
 
 pub fn init(
     alloc: Allocator,
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
+    if (comptime is_windows) return .{
+        .alloc = alloc,
+        .blending = opts.config.blending,
+        .device = device,
+        .wgl_context = ghostty_wgl_create(opts.rt_surface.platform.windows.hwnd) orelse
+            return error.WGLContextCreationFailed,
+        .wgl_vsync = opts.config.vsync,
+    };
     const display = device.display;
 
     // Bind to OpenGL API explicitly before we create the context,
@@ -90,6 +108,11 @@ pub fn init(
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        ghostty_wgl_destroy(self.wgl_context.?);
+        self.* = undefined;
+        return;
+    }
     self.device.display.releaseCurrent();
     self.egl_context.destroy(self.device.display) catch {};
     self.* = undefined;
@@ -200,6 +223,12 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
+    if (comptime is_windows) {
+        if (ghostty_wgl_enter(self.wgl_context.?, @intFromBool(self.wgl_vsync)) == 0) return error.WGLMakeCurrentFailed;
+        errdefer ghostty_wgl_leave();
+        try prepareContext(&ghostty_wgl_proc);
+        return;
+    }
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -209,6 +238,12 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        gl.finish();
+        ghostty_wgl_leave();
+        gl.glad.unload();
+        return;
+    }
     self.device.display.releaseCurrent();
     gl.glad.unload();
 }
@@ -279,6 +314,17 @@ pub fn present(
     target: Target,
     presentation_health: rendererpkg.Health,
 ) !ExportedFrame {
+    if (comptime is_windows) {
+        // Copy encoded sRGB pixels on the GPU to the native window backbuffer.
+        try gl.disable(gl.c.GL_FRAMEBUFFER_SRGB);
+        defer gl.enable(gl.c.GL_FRAMEBUFFER_SRGB) catch {};
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_READ_FRAMEBUFFER, target.framebuffer.id);
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, 0);
+        defer gl.glad.context.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
+        try gl.blitFramebuffer(0, 0, @intCast(target.width), @intCast(target.height), 0, 0, @intCast(target.width), @intCast(target.height), .{ .color_buffer_bit = true }, .nearest);
+        if (ghostty_wgl_swap(self.wgl_context.?) == 0) return error.WGLSwapFailed;
+        return;
+    }
     // We only export DMABUFs when the apprt can present them.
     // Otherwise, use CPU buffers.
     if (presentation_health == .healthy) {
@@ -298,7 +344,7 @@ pub fn present(
 }
 
 /// A finished frame exported for presentation by the apprt.
-pub const ExportedFrame = union(enum) {
+pub const ExportedFrame = if (is_windows) void else union(enum) {
     dmabuf: Dmabuf,
     memory: Memory,
 
