@@ -14,6 +14,7 @@ step: *std.Build.Step,
 
 /// The final static library file
 output: std.Build.LazyPath,
+implib: ?std.Build.LazyPath = null,
 dsym: ?std.Build.LazyPath,
 pkg_config: ?std.Build.LazyPath,
 pkg_config_static: ?std.Build.LazyPath,
@@ -172,6 +173,7 @@ pub fn initShared(
     return .{
         .step = &lib.step,
         .output = lib.getEmittedBin(),
+        .implib = if (deps.config.target.result.os.tag == .windows) lib.getEmittedImplib() else null,
         .dsym = dsymutil,
         .pkg_config = pcs.shared,
         .pkg_config_static = pcs.static,

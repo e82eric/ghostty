@@ -47,7 +47,8 @@ comptime {
 
     // Force-reference our memset override so its export is emitted.
     // See quirks_memset.zig for details on why this exists.
-    _ = @import("quirks_memset.zig");
+    // MSVC's CRT supplies a strong memset in DLL builds as well.
+    if (builtin.os.tag != .windows) _ = @import("quirks_memset.zig");
 }
 
 /// ghostty_info_s

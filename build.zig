@@ -233,6 +233,26 @@ pub fn build(b: *std.Build) !void {
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
                 lib_static.install("ghostty-internal-static.lib");
+                const sample = b.addExecutable(.{
+                    .name = "ghostty_win32",
+                    .root_module = b.createModule(.{
+                        .target = config.target,
+                        .optimize = config.optimize,
+                        .link_libc = true,
+                    }),
+                });
+                sample.root_module.addCSourceFile(.{
+                    .file = b.path("example/c-win32/src/main.c"),
+                    .flags = &.{ "-std=c11", "-D_CRT_SECURE_NO_WARNINGS" },
+                });
+                sample.root_module.addIncludePath(b.path("include"));
+                sample.root_module.addObjectFile(lib_shared.implib.?);
+                sample.root_module.linkSystemLibrary("user32", .{});
+                const sample_step = b.step("win32-sample", "Build the native Win32 OpenGL terminal sample");
+                sample_step.dependOn(&b.addInstallArtifact(sample, .{}).step);
+                // The import library records ghostty.dll, irrespective of
+                // the internal library's installed filename.
+                sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");

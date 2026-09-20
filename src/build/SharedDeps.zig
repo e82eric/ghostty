@@ -217,7 +217,10 @@ pub fn add(
     // (note: errno is C stdlib but we just include it here because that's
     // where it's generally included otherwise)
     try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
-        .source = .{ .includes = .{ .files = &.{
+        .source = .{ .includes = .{ .files = if (target.result.os.tag == .windows) &.{
+            .{ .path = "errno.h" },
+            .{ .path = "signal.h" },
+        } else &.{
             .{ .path = "errno.h" },
             .{ .path = "pwd.h" },
             .{ .path = "signal.h" },
@@ -471,6 +474,17 @@ pub fn add(
     // C files
     step.root_module.link_libc = true;
     step.root_module.addIncludePath(b.path("src/stb"));
+    if (target.result.os.tag == .windows and self.config.renderer == .opengl) {
+        step.root_module.addIncludePath(b.path("vendor/glad/include"));
+        if (step.kind == .lib) step.root_module.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
+        step.root_module.addCSourceFile(.{ .file = b.path("src/renderer/opengl/wgl.c"), .flags = &.{} });
+        step.root_module.linkSystemLibrary("opengl32", .{});
+        step.root_module.linkSystemLibrary("gdi32", .{});
+        step.root_module.linkSystemLibrary("user32", .{});
+    }
     // Disable ubsan for MSVC: Zig's ubsan runtime cannot be bundled
     // on Windows (LNK4229), leaving __ubsan_handle_* unresolved when
     // the static archive is consumed by an external linker.

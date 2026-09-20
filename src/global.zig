@@ -66,14 +66,10 @@ pub fn init(opts: InitOpts) !void {
         },
         .args = switch (opts) {
             .main, .tool => |m| m.args,
-            // TODO: Using the C API from Windows is unsupported at this time.
-            //
-            // When do we plan on supporting Windows, it's recommended to
-            // ensure that the C API can take a UNICODE_STRING (aka []16, a
-            // WTF-16 string) so that it can just be passed into
-            // std.process.Args.Vector directly.
+            // Preserve the host process's Unicode command line on Windows;
+            // CRT argv may have already lost characters in codepage conversion.
             .c => |c| .{ .vector = if (builtin.os.tag == .windows)
-                return error.UnsupportedOSForCApi
+                std.os.windows.peb().ProcessParameters.CommandLine.slice()
             else
                 c.argv[0..c.argc] },
         },

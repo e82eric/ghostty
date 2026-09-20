@@ -2,6 +2,14 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+extern fn ghostty_wgl_create(*anyopaque) ?*anyopaque;
+extern fn ghostty_wgl_enter(*anyopaque, c_int) c_int;
+extern fn ghostty_wgl_leave() void;
+extern fn ghostty_wgl_destroy(*anyopaque) void;
+extern fn ghostty_wgl_swap(*anyopaque) c_int;
+extern fn ghostty_wgl_proc([*:0]const u8) ?*const anyopaque;
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
@@ -43,10 +51,19 @@ alloc: std.mem.Allocator,
 /// Alpha blending mode
 blending: configpkg.Config.AlphaBlending,
 
-egl_display: *gl.egl.Display,
-egl_context: *gl.egl.Context,
+egl_display: *gl.egl.Display = undefined,
+egl_context: *gl.egl.Context = undefined,
+wgl_context: ?*anyopaque = null,
+wgl_vsync: bool = true,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
+    if (comptime is_windows) return .{
+        .alloc = alloc,
+        .blending = opts.config.blending,
+        .wgl_context = ghostty_wgl_create(opts.rt_surface.platform.windows.hwnd) orelse
+            return error.WGLContextCreationFailed,
+        .wgl_vsync = opts.config.vsync,
+    };
     try egl.load();
 
     const display: *egl.Display = try .init(egl.c.EGL_DEFAULT_DISPLAY);
@@ -103,6 +120,11 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        ghostty_wgl_destroy(self.wgl_context.?);
+        self.* = undefined;
+        return;
+    }
     self.egl_display.releaseCurrent();
     self.egl_context.destroy(self.egl_display) catch {};
 
@@ -217,6 +239,12 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
+    if (comptime is_windows) {
+        if (ghostty_wgl_enter(self.wgl_context.?, @intFromBool(self.wgl_vsync)) == 0) return error.WGLMakeCurrentFailed;
+        errdefer ghostty_wgl_leave();
+        try prepareContext(&ghostty_wgl_proc);
+        return;
+    }
     try self.egl_display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -226,6 +254,12 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        gl.finish();
+        ghostty_wgl_leave();
+        gl.glad.unload();
+        return;
+    }
     self.egl_display.releaseCurrent();
     gl.glad.unload();
 }
@@ -292,6 +326,17 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
 ///
 /// This runs on the render thread.
 pub fn present(self: *OpenGL, target: Target) !ExportedFrame {
+    if (comptime is_windows) {
+        // Copy encoded sRGB pixels on the GPU to the native window backbuffer.
+        try gl.disable(gl.c.GL_FRAMEBUFFER_SRGB);
+        defer gl.enable(gl.c.GL_FRAMEBUFFER_SRGB) catch {};
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_READ_FRAMEBUFFER, target.framebuffer.id);
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, 0);
+        defer gl.glad.context.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
+        try gl.blitFramebuffer(0, 0, @intCast(target.width), @intCast(target.height), 0, 0, @intCast(target.width), @intCast(target.height), .{ .color_buffer_bit = true }, .nearest);
+        if (ghostty_wgl_swap(self.wgl_context.?) == 0) return error.WGLSwapFailed;
+        return;
+    }
     if (target.exportDmabuf(self.egl_display, self.egl_context)) |dmabuf| {
         return .{ .dmabuf = dmabuf };
     } else |_| {
@@ -306,7 +351,7 @@ pub fn present(self: *OpenGL, target: Target) !ExportedFrame {
 }
 
 /// A finished frame exported for presentation by the apprt.
-pub const ExportedFrame = union(enum) {
+pub const ExportedFrame = if (is_windows) void else union(enum) {
     dmabuf: Dmabuf,
     memory: Memory,
 
