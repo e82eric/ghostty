@@ -65,10 +65,6 @@ mailbox: termio.Mailbox,
 /// from the child process and calls callbacks in the stream handler.
 terminal_stream: StreamHandler.Stream,
 
-/// Last time the cursor was reset. This is used to prevent message
-/// flooding with cursor resets.
-last_cursor_reset: ?std.Io.Timestamp = null,
-
 /// State we have for thread enter. This may be null if we don't need
 /// to keep track of any state or if its already been freed.
 thread_enter_state: ?*ThreadEnterState = null,
@@ -684,24 +680,6 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;
-
-    // Whenever a character is typed, we ensure the cursor is in the
-    // non-blink state so it is rendered if visible. If we're under
-    // HEAVY read load, we don't want to send a ton of these so we
-    // use a timer under the covers
-    const now = std.Io.Timestamp.now(global.io(), .awake);
-    cursor_reset: {
-        if (self.last_cursor_reset) |last| {
-            if (last.durationTo(now).toMilliseconds() <= 500) {
-                break :cursor_reset;
-            }
-        }
-
-        self.last_cursor_reset = now;
-        _ = self.renderer_mailbox.push(global.io(), .{
-            .reset_cursor_blink = {},
-        }, .{ .instant = {} });
-    }
 
     // If we have an inspector, we enter SLOW MODE because we need to
     // process a byte at a time alternating between the inspector handler
