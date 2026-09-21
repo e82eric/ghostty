@@ -20,6 +20,7 @@ pub const COORD = windows.COORD;
 pub const DWORD = windows.DWORD;
 pub const DWORD_PTR = windows.DWORD_PTR;
 pub const HANDLE = windows.HANDLE;
+pub const HMODULE = windows.HMODULE;
 pub const HINSTANCE = windows.HINSTANCE;
 pub const HPCON = windows.LPVOID;
 pub const HRESULT = c_long;
@@ -67,6 +68,7 @@ pub const STARTUPINFOEX = extern struct {
 // Well-known constant values
 pub const INFINITE = 4294967295;
 pub const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
+pub const LOAD_LIBRARY_SEARCH_APPLICATION_DIR = 0x00000200;
 pub const MAX_PATH = windows.MAX_PATH;
 pub const FALSE: windows.BOOL = .fromBool(false);
 pub const TRUE: windows.BOOL = .fromBool(true);
@@ -137,6 +139,16 @@ pub const OBJECT_ATTRIBUTES = windows.OBJECT.ATTRIBUTES;
 // Exported functions by library
 pub const exp = struct {
     pub const kernel32 = struct {
+        pub extern "kernel32" fn LoadLibraryExW(
+            lpLibFileName: LPCWSTR,
+            hFile: ?HANDLE,
+            dwFlags: DWORD,
+        ) callconv(.winapi) ?HMODULE;
+        pub extern "kernel32" fn GetProcAddress(
+            hModule: HMODULE,
+            lpProcName: [*:0]const u8,
+        ) callconv(.winapi) ?windows.FARPROC;
+        pub extern "kernel32" fn FreeLibrary(hLibModule: HMODULE) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CreatePipe(
             hReadPipe: *HANDLE,
             hWritePipe: *HANDLE,

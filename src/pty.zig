@@ -331,11 +331,77 @@ const WindowsPty = struct {
     // Process-wide counter for pipe names
     var pipe_name_counter = std.atomic.Value(u32).init(1);
 
+    const CreatePseudoConsoleFn = *const fn (
+        windows.COORD,
+        windows.HANDLE,
+        windows.HANDLE,
+        windows.DWORD,
+        *windows.HPCON,
+    ) callconv(.winapi) windows.HRESULT;
+    const ResizePseudoConsoleFn = *const fn (
+        windows.HPCON,
+        windows.COORD,
+    ) callconv(.winapi) windows.HRESULT;
+    const ClosePseudoConsoleFn = *const fn (windows.HPCON) callconv(.winapi) void;
+
+    const ConPtyApi = struct {
+        module: ?windows.HMODULE = null,
+        create: CreatePseudoConsoleFn = windows.exp.kernel32.CreatePseudoConsole,
+        resize: ResizePseudoConsoleFn = windows.exp.kernel32.ResizePseudoConsole,
+        close: ClosePseudoConsoleFn = windows.exp.kernel32.ClosePseudoConsole,
+
+        fn load() ConPtyApi {
+            const module = windows.exp.kernel32.LoadLibraryExW(
+                std.unicode.utf8ToUtf16LeStringLiteral("conpty.dll"),
+                null,
+                windows.LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
+            ) orelse {
+                log.info("using system ConPTY", .{});
+                return .{};
+            };
+
+            const create = windows.exp.kernel32.GetProcAddress(
+                module,
+                "CreatePseudoConsole",
+            ) orelse return invalidSidecar(module, "CreatePseudoConsole");
+            const resize = windows.exp.kernel32.GetProcAddress(
+                module,
+                "ResizePseudoConsole",
+            ) orelse return invalidSidecar(module, "ResizePseudoConsole");
+            const close = windows.exp.kernel32.GetProcAddress(
+                module,
+                "ClosePseudoConsole",
+            ) orelse return invalidSidecar(module, "ClosePseudoConsole");
+
+            log.info("using side-by-side conpty.dll", .{});
+            return .{
+                .module = module,
+                .create = @ptrCast(create),
+                .resize = @ptrCast(resize),
+                .close = @ptrCast(close),
+            };
+        }
+
+        fn invalidSidecar(module: windows.HMODULE, symbol: []const u8) ConPtyApi {
+            _ = windows.exp.kernel32.FreeLibrary(module);
+            log.warn("side-by-side conpty.dll has no {s}; using system ConPTY", .{symbol});
+            return .{};
+        }
+
+        fn deinit(self: *ConPtyApi) void {
+            if (self.module) |module| {
+                _ = windows.exp.kernel32.FreeLibrary(module);
+            }
+            self.* = undefined;
+        }
+    };
+
     out_pipe: windows.HANDLE,
     in_pipe: windows.HANDLE,
     out_pipe_pty: windows.HANDLE,
     in_pipe_pty: windows.HANDLE,
     pseudo_console: windows.HPCON,
+    conpty: ConPtyApi,
     size: winsize,
 
     pub const OpenError = error{Unexpected};
@@ -343,6 +409,8 @@ const WindowsPty = struct {
     /// Open a new PTY with the given initial size.
     pub fn open(size: winsize) OpenError!Pty {
         var pty: Pty = undefined;
+        pty.conpty = ConPtyApi.load();
+        errdefer pty.conpty.deinit();
 
         var pipe_path_buf: [128]u8 = undefined;
         var pipe_path_buf_w: [128]u16 = undefined;
@@ -440,7 +508,7 @@ const WindowsPty = struct {
         try SetHandleInformation.f(pty.out_pipe);
         try SetHandleInformation.f(pty.out_pipe_pty);
 
-        const result = windows.exp.kernel32.CreatePseudoConsole(
+        const result = pty.conpty.create(
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
             pty.in_pipe_pty,
             pty.out_pipe_pty,
@@ -458,7 +526,8 @@ const WindowsPty = struct {
         _ = windows.exp.kernel32.CloseHandle(self.in_pipe);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe_pty);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe);
-        _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
+        self.conpty.close(self.pseudo_console);
+        self.conpty.deinit();
         self.* = undefined;
     }
 
@@ -473,7 +542,7 @@ const WindowsPty = struct {
 
     /// Set the size of the pty.
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-        const result = windows.exp.kernel32.ResizePseudoConsole(
+        const result = self.conpty.resize(
             self.pseudo_console,
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
         );
