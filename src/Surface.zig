@@ -2944,6 +2944,18 @@ pub fn keyCallback(
     // some data to send to the pty, then we move the viewport down to the
     // bottom. We also clear the selection for any key other then modifiers.
     if (!event.key.modifier()) {
+        // Keep the cursor visible while the user is typing and restart its
+        // blink interval. Doing this from input rather than terminal output
+        // prevents cursor-control sequences from continually resetting the
+        // timer.
+        if (event.action != .release) {
+            _ = self.renderer_thread.mailbox.push(
+                global.io(),
+                .{ .reset_cursor_blink = {} },
+                .{ .instant = {} },
+            );
+        }
+
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
 
