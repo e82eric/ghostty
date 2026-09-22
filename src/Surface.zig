@@ -184,6 +184,12 @@ command_timer: ?std.Io.Timestamp = null,
 /// Search state
 search: ?Search = null,
 
+/// Frozen terminal used for modal presentation. This is owned independently
+/// of the built-in search worker so embedders can use snapshot mode with
+/// their own matching and interaction logic.
+presentation_snapshot: ?*terminal.Terminal = null,
+presentation_snapshot_generation: u64 = 0,
+
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
 
@@ -225,6 +231,114 @@ const Search = struct {
         self.state.deinit();
     }
 };
+
+/// Clone the complete live terminal, including scrollback, for modal search.
+/// The clone is never fed PTY bytes, so a ground stream continuation is
+/// correct even if the live parser is currently between input fragments.
+fn createSearchSnapshot(self: *Surface) !*terminal.Terminal {
+    var encoded: std.Io.Writer.Allocating = .init(self.alloc);
+    defer encoded.deinit();
+
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+        try terminal.snapshot.encode(
+            self.alloc,
+            &encoded.writer,
+            self.renderer_state.terminal,
+            .{ .continuation = .ground },
+        );
+    }
+
+    var reader: std.Io.Reader = .fixed(encoded.written());
+    var decoded = try terminal.snapshot.decode(
+        self.alloc,
+        global.io(),
+        &reader,
+        .{ .max_continuation_bytes = 0 },
+    );
+    defer decoded.deinit(self.alloc);
+
+    // Do not expose a partial snapshot to external search. The READY section
+    // declares the complete logical history extent for each screen, so verify
+    // that every declared row was actually restored.
+    {
+        var screens = decoded.terminal.?.screens.all.iterator();
+        while (screens.next()) |entry| {
+            const expected = decoded.history_rows.get(entry.key) orelse
+                return error.IncompleteSnapshotHistory;
+            const screen = entry.value.*;
+            const actual: u64 = @intCast(
+                screen.pages.total_rows - screen.pages.rows,
+            );
+            if (actual != expected) return error.IncompleteSnapshotHistory;
+        }
+    }
+
+    const result = try self.alloc.create(terminal.Terminal);
+    errdefer self.alloc.destroy(result);
+    result.* = decoded.toOwned();
+
+    // Modal snapshot presentation has no live insertion cursor. This also
+    // prevents the cursor blink timer from changing the frozen frame.
+    result.modes.set(.cursor_visible, false);
+    result.flags.dirty.clear = true;
+    return result;
+}
+
+/// Enter frozen presentation mode. Repeated calls retain the current
+/// snapshot so its coordinates remain stable.
+pub fn beginPresentationSnapshot(self: *Surface) !void {
+    if (self.presentation_snapshot != null) return;
+    const snapshot_terminal = try self.createSearchSnapshot();
+    errdefer {
+        snapshot_terminal.deinit(self.alloc);
+        self.alloc.destroy(snapshot_terminal);
+    }
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    self.renderer_state.presentation_terminal = snapshot_terminal;
+    self.presentation_snapshot = snapshot_terminal;
+    self.presentation_snapshot_generation +%= 1;
+    if (self.presentation_snapshot_generation == 0) {
+        self.presentation_snapshot_generation = 1;
+    }
+    self.renderer_state.mutex.unlock(global.io());
+    self.queueRender() catch |err| {
+        log.warn("failed to render after beginning snapshot mode err={}", .{err});
+    };
+}
+
+/// Leave frozen presentation mode. The renderer is detached before snapshot
+/// pages are destroyed. Built-in search has an independent lifecycle.
+pub fn endPresentationSnapshot(self: *Surface) void {
+    const snapshot_terminal = self.presentation_snapshot orelse return;
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    if (self.renderer_state.presentation_terminal == snapshot_terminal) {
+        self.renderer_state.presentation_terminal = null;
+    }
+    self.renderer_state.terminal.flags.dirty.clear = true;
+    self.presentation_snapshot = null;
+    self.renderer_state.mutex.unlock(global.io());
+
+    // Clear decorations before asking for the first live frame. The renderer
+    // drains its mailbox before updating a frame, so no snapshot range is
+    // evaluated against the live terminal.
+    const empty_arena = std.heap.ArenaAllocator.init(self.alloc);
+    _ = self.renderer_thread.mailbox.push(global.io(), .{
+        .snapshot_highlights = .{
+            .matches = .{ .arena = empty_arena, .matches = &.{} },
+            .selected = null,
+        },
+    }, .{ .forever = {} });
+
+    snapshot_terminal.deinit(self.alloc);
+    self.alloc.destroy(snapshot_terminal);
+    self.queueRender() catch |err| {
+        log.warn("failed to render after ending snapshot mode err={}", .{err});
+    };
+}
 
 /// Mouse state for the surface.
 const Mouse = struct {
@@ -809,6 +923,7 @@ pub fn init(
 pub fn deinit(self: *Surface) void {
     // Stop search thread
     if (self.search) |*s| s.deinit();
+    self.endPresentationSnapshot();
 
     // Stop rendering thread
     {
@@ -2024,8 +2139,26 @@ pub fn dumpTextLocked(
     alloc: Allocator,
     sel: terminal.Selection,
 ) !Text {
+    return self.dumpTerminalTextLocked(
+        alloc,
+        &self.io.terminal,
+        sel,
+    );
+}
+
+/// Read text from a specific terminal while the renderer-state mutex is held.
+/// Snapshot consumers use this with the presentation terminal so their ranges
+/// cannot silently resolve against changing live scrollback.
+pub fn dumpTerminalTextLocked(
+    self: *Surface,
+    alloc: Allocator,
+    source_terminal: *terminal.Terminal,
+    sel: terminal.Selection,
+) !Text {
+    const source_screen = source_terminal.screens.active;
+
     // Read out the text
-    const text = try self.io.terminal.screens.active.selectionString(alloc, .{
+    const text = try source_screen.selectionString(alloc, .{
         .sel = sel,
         .trim = false,
     });
@@ -2035,19 +2168,19 @@ pub fn dumpTextLocked(
     const vp: ?Text.Viewport = viewport: {
         // If our bottom right pin is before the viewport, then we can't
         // possibly have this text be within the viewport.
-        const vp_tl_pin = self.io.terminal.screens.active.pages.getTopLeft(.viewport);
-        const br_pin = sel.bottomRight(self.io.terminal.screens.active);
+        const vp_tl_pin = source_screen.pages.getTopLeft(.viewport);
+        const br_pin = sel.bottomRight(source_screen);
         if (br_pin.before(vp_tl_pin)) break :viewport null;
 
         // If our top-left pin is after the viewport, then we can't possibly
         // have this text be within the viewport.
-        const vp_br_pin = self.io.terminal.screens.active.pages.getBottomRight(.viewport) orelse {
+        const vp_br_pin = source_screen.pages.getBottomRight(.viewport) orelse {
             // I don't think this is possible but I don't want to crash on
             // that assertion so let's just break out...
             log.warn("viewport bottom-right pin not found, bug?", .{});
             break :viewport null;
         };
-        const tl_pin = sel.topLeft(self.io.terminal.screens.active);
+        const tl_pin = sel.topLeft(source_screen);
         if (vp_br_pin.before(tl_pin)) break :viewport null;
 
         // We established that our top-left somewhere before the viewport
@@ -2057,7 +2190,7 @@ pub fn dumpTextLocked(
 
         // Our top-left point. If it doesn't exist in the viewport it must
         // be before and we can return (0,0).
-        const tl_pt: terminal.Point = self.io.terminal.screens.active.pages.pointFromPin(
+        const tl_pt: terminal.Point = source_screen.pages.pointFromPin(
             .viewport,
             tl_pin,
         ) orelse tl: {
@@ -2070,7 +2203,7 @@ pub fn dumpTextLocked(
 
         // Our bottom-right point. If it doesn't exist in the viewport
         // it must be the bottom-right of the viewport.
-        const br_pt = self.io.terminal.screens.active.pages.pointFromPin(
+        const br_pt = source_screen.pages.pointFromPin(
             .viewport,
             br_pin,
         ) orelse br: {
@@ -2078,7 +2211,7 @@ pub fn dumpTextLocked(
                 assert(vp_br_pin.before(br_pin));
             }
 
-            break :br self.io.terminal.screens.active.pages.pointFromPin(
+            break :br source_screen.pages.pointFromPin(
                 .viewport,
                 vp_br_pin,
             ).?;
@@ -2596,6 +2729,18 @@ pub fn sizeCallback(self: *Surface, size: apprt.SurfaceSize) !void {
 }
 
 fn resize(self: *Surface, size: rendererpkg.ScreenSize) !void {
+    // Snapshot coordinates deliberately do not reflow. End the modal search
+    // before applying a new size so the caller never observes coordinates
+    // that refer to a different layout.
+    if (self.presentation_snapshot != null) {
+        self.endPresentationSnapshot();
+        _ = try self.rt_app.performAction(
+            .{ .surface = self },
+            .end_search,
+            {},
+        );
+    }
+
     // Save our screen size
     self.size.screen = size;
     self.balancePaddingIfNeeded();

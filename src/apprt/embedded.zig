@@ -383,6 +383,13 @@ pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
     windows: extern struct { hwnd: *anyopaque },
+    opengl: OpenGL,
+
+    pub const OpenGL = extern struct {
+        window: ?*anyopaque,
+        display: ?*anyopaque,
+        context: *anyopaque,
+    };
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -407,6 +414,12 @@ pub const Platform = union(PlatformTag) {
         ios: extern struct {
             uiview: ?*anyopaque,
         },
+
+        opengl: extern struct {
+            window: ?*anyopaque,
+            display: ?*anyopaque,
+            context: ?*anyopaque,
+        },
     };
 
     /// Initialize a Platform a tag and configuration from the C ABI.
@@ -430,6 +443,12 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .opengl => .{ .opengl = .{
+                .window = c_platform.opengl.window,
+                .display = c_platform.opengl.display,
+                .context = c_platform.opengl.context orelse return error.OpenGLContextMustBeSet,
+            } },
         };
     }
 };
@@ -441,6 +460,7 @@ pub const PlatformTag = enum(c_int) {
     macos = 1,
     ios = 2,
     windows = 3,
+    opengl = 4,
 };
 
 pub const EnvVar = extern struct {
@@ -1256,8 +1276,15 @@ pub const Surface = struct {
     }
 
     pub fn renderDeviceOptions(self: *const Surface) !renderer.Device.Options {
-        // The Metal renderer currently does not have any options
-        _ = self;
+        // An embedder sharing its OpenGL context renders on its EGL display.
+        if (comptime @hasField(renderer.Device.Options, "display")) {
+            switch (self.platform) {
+                .opengl => |v| if (v.display) |display| {
+                    return .{ .display = @ptrCast(@alignCast(display)) };
+                },
+                else => {},
+            }
+        }
         return .{};
     }
 };
@@ -1515,6 +1542,19 @@ pub const Inspector = struct {
 
 // C API
 pub const CAPI = struct {
+    const GLFrame = struct {
+        alloc: Allocator,
+        frame: renderer.Renderer.ExportedFrame,
+    };
+
+    const GLFrameDescription = extern struct {
+        handle: ?*GLFrame,
+        texture: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
+    };
+
     /// This is the same as Surface.KeyEvent but this is the raw C API version.
     const KeyEvent = extern struct {
         action: input.Action,
@@ -1647,13 +1687,23 @@ pub const CAPI = struct {
                 ),
             };
 
-            // Clamp our point to the screen bounds.
-            const clamped_x = @min(self.x, screen.pages.cols -| 1);
-            const clamped_y = @min(self.y, screen.pages.rows -| 1);
-
             return switch (self.coord_tag) {
                 // Exact coordinates require a specific pin.
                 .exact => exact: {
+                    // Each point tag has a different vertical extent. In
+                    // particular, `.screen` includes all retained history,
+                    // which can be much taller than the active viewport.
+                    const bottom_right = screen.pages.getBottomRight(tag) orelse
+                        return null;
+                    const bottom_right_point = screen.pages.pointFromPin(
+                        tag,
+                        bottom_right,
+                    ) orelse return null;
+                    const clamped_x = @min(self.x, screen.pages.cols -| 1);
+                    const clamped_y = @min(
+                        self.y,
+                        bottom_right_point.coord().y,
+                    );
                     const pt_x = std.math.cast(
                         terminal.size.CellCountInt,
                         clamped_x,
@@ -1696,6 +1746,35 @@ pub const CAPI = struct {
             };
         }
     };
+
+    test "embedded screen point spans full scrollback" {
+        var t: terminal.Terminal = try .init(std.testing.io, std.testing.allocator, .{
+            .cols = 16,
+            .rows = 2,
+            .max_scrollback_bytes = null,
+            .max_scrollback_lines = null,
+        });
+        defer t.deinit(std.testing.allocator);
+
+        var stream = t.vtStream();
+        defer stream.deinit();
+        for (0..200) |_| stream.nextSlice("history\r\n");
+
+        const screen = t.screens.active;
+        try std.testing.expect(screen.pages.total_rows > screen.pages.rows);
+        const last_y: u32 = @intCast(screen.pages.total_rows - 1);
+        const p: Point = .{
+            .tag = .screen,
+            .coord_tag = .exact,
+            .x = 0,
+            .y = last_y,
+        };
+        const pin = p.pin(screen).?;
+        try std.testing.expectEqual(
+            last_y,
+            screen.pages.pointFromPin(.screen, pin).?.screen.y,
+        );
+    }
 
     // Reference the conditional exports based on target platform
     // so they're included in the C API.
@@ -1985,6 +2064,208 @@ pub const CAPI = struct {
         ptr.deinit();
     }
 
+    export fn ghostty_surface_snapshot_active(surface: *Surface) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        return state.presentation_terminal != null;
+    }
+
+    export fn ghostty_surface_snapshot_begin(
+        surface: *Surface,
+        generation: *u64,
+    ) bool {
+        surface.core_surface.beginPresentationSnapshot() catch |err| {
+            log.warn("error beginning snapshot presentation err={}", .{err});
+            return false;
+        };
+        generation.* = surface.core_surface.presentation_snapshot_generation;
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_end(
+        surface: *Surface,
+        generation: u64,
+    ) bool {
+        if (surface.core_surface.presentation_snapshot == null or
+            surface.core_surface.presentation_snapshot_generation != generation)
+        {
+            return false;
+        }
+        surface.core_surface.endPresentationSnapshot();
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_size(
+        surface: *Surface,
+        generation: u64,
+        columns: *u32,
+        screen_rows: *u32,
+        total_rows: *u64,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation)
+            return false;
+        const t = state.presentation_terminal orelse return false;
+        columns.* = t.cols;
+        screen_rows.* = t.rows;
+        const screen = t.screens.active;
+        const br = screen.pages.getBottomRight(.screen) orelse return false;
+        const br_point = screen.pages.pointFromPin(.screen, br) orelse return false;
+        total_rows.* = @as(u64, br_point.screen.y) + 1;
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_read_text(
+        surface: *Surface,
+        generation: u64,
+        sel: Selection,
+        result: *Text,
+    ) bool {
+        const core_surface = &surface.core_surface;
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
+
+        if (core_surface.presentation_snapshot_generation != generation)
+            return false;
+
+        const t = core_surface.renderer_state.presentation_terminal orelse
+            return false;
+        const core_sel = sel.core(t.screens.active) orelse return false;
+        const text = core_surface.dumpTerminalTextLocked(
+            global.alloc(),
+            t,
+            core_sel,
+        ) catch |err| {
+            log.warn("error reading snapshot text err={}", .{err});
+            return false;
+        };
+
+        const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+        };
+        result.* = .{
+            .tl_px_x = vp.tl_px_x,
+            .tl_px_y = vp.tl_px_y,
+            .offset_start = vp.offset_start,
+            .offset_len = vp.offset_len,
+            .text = text.text.ptr,
+            .text_len = text.text.len,
+        };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_set_highlights(
+        surface: *Surface,
+        generation: u64,
+        ranges: ?[*]const Selection,
+        range_count: usize,
+        selected: ?*const Selection,
+    ) bool {
+        snapshotSetHighlights(
+            surface,
+            generation,
+            if (ranges) |ptr| ptr[0..range_count] else if (range_count == 0) &.{} else return false,
+            selected,
+        ) catch |err| {
+            log.warn("error setting snapshot highlights err={}", .{err});
+            return false;
+        };
+        return true;
+    }
+
+    fn snapshotSetHighlights(
+        surface: *Surface,
+        generation: u64,
+        ranges: []const Selection,
+        selected: ?*const Selection,
+    ) !void {
+        var matches_arena = std.heap.ArenaAllocator.init(global.alloc());
+        errdefer matches_arena.deinit();
+        const matches_alloc = matches_arena.allocator();
+        const matches = try matches_alloc.alloc(
+            terminal.highlight.Flattened,
+            ranges.len,
+        );
+
+        var selected_message: ?renderer.Message.SearchMatch = null;
+        errdefer if (selected_message) |*value| value.arena.deinit();
+
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation)
+            return error.StaleSnapshot;
+        const t = state.presentation_terminal orelse return error.NoSnapshot;
+        const screen = t.screens.active;
+
+        for (ranges, matches) |range, *dst| {
+            const sel = range.core(screen) orelse return error.InvalidRange;
+            dst.* = try .init(
+                matches_alloc,
+                sel.topLeft(screen),
+                sel.bottomRight(screen),
+            );
+        }
+
+        if (selected) |range| {
+            const sel = range.core(screen) orelse return error.InvalidRange;
+            const selected_point = screen.pages.pointFromPin(
+                .screen,
+                sel.topLeft(screen),
+            ) orelse return error.InvalidRange;
+            screen.scroll(.{ .row = selected_point.screen.y });
+            t.flags.dirty.clear = true;
+            var arena = std.heap.ArenaAllocator.init(global.alloc());
+            errdefer arena.deinit();
+            selected_message = .{
+                .arena = arena,
+                .match = try .init(
+                    arena.allocator(),
+                    sel.topLeft(screen),
+                    sel.bottomRight(screen),
+                ),
+            };
+        }
+
+        _ = surface.core_surface.renderer_thread.mailbox.push(
+            global.io(),
+            .{ .snapshot_highlights = .{
+                .matches = .{
+                    .arena = matches_arena,
+                    .matches = matches,
+                },
+                .selected = selected_message,
+            } },
+            .{ .forever = {} },
+        );
+        surface.core_surface.renderer_thread.wakeup.notify() catch {};
+    }
+
+    export fn ghostty_surface_snapshot_scroll_to(
+        surface: *Surface,
+        generation: u64,
+        range: Selection,
+    ) bool {
+        const core_surface = &surface.core_surface;
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
+        if (core_surface.presentation_snapshot_generation != generation)
+            return false;
+        const t = core_surface.renderer_state.presentation_terminal orelse
+            return false;
+        const screen = t.screens.active;
+        const sel = range.core(screen) orelse return false;
+        screen.scroll(.{ .pin = sel.topLeft(screen) });
+        core_surface.renderer_thread.wakeup.notify() catch {};
+        return true;
+    }
+
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
         surface.refresh();
@@ -1994,6 +2275,47 @@ pub const CAPI = struct {
     /// call as soon as possible (NOW if possible).
     export fn ghostty_surface_draw(surface: *Surface) void {
         surface.draw();
+    }
+
+    /// Take the newest frame exported for composition by an OpenGL host.
+    /// The caller owns a successful result until ghostty_gl_frame_release.
+    export fn ghostty_surface_take_gl_frame(
+        surface: *Surface,
+        result: *GLFrameDescription,
+    ) bool {
+        if (comptime renderer.Renderer.ExportedFrame == void) return false;
+
+        const frame = surface.core_surface.renderer.takeFrame() orelse return false;
+        const texture = switch (frame) {
+            .texture => |v| v,
+            else => {
+                frame.deinit();
+                return false;
+            },
+        };
+
+        const alloc = surface.app.core_app.alloc;
+        const owned = alloc.create(GLFrame) catch {
+            frame.deinit();
+            return false;
+        };
+        owned.* = .{ .alloc = alloc, .frame = frame };
+        result.* = .{
+            .handle = owned,
+            .texture = texture.texture,
+            .width = texture.width,
+            .height = texture.height,
+            .generation = texture.generation,
+        };
+        return true;
+    }
+
+    export fn ghostty_gl_frame_release(frame: *GLFrame) void {
+        if (comptime renderer.Renderer.ExportedFrame != void) {
+            const alloc = frame.alloc;
+            frame.frame.deinit();
+            alloc.destroy(frame);
+        }
     }
 
     /// Update the size of a surface. This will trigger resize notifications
@@ -2086,6 +2408,31 @@ pub const CAPI = struct {
             log.warn("error processing key event err={}", .{err});
             return false;
         };
+    }
+
+    /// Send a key event identified by its USB HID usage code. This avoids
+    /// requiring cross-platform embedders to reproduce Ghostty's native
+    /// keycode tables.
+    export fn ghostty_surface_key_usb(
+        surface: *Surface,
+        action: input.Action,
+        mods: c_int,
+        usb: u32,
+        unshifted_codepoint: u32,
+    ) bool {
+        const native = for (input.keycodes.entries) |entry| {
+            if (entry.usb == usb) break entry.native;
+        } else 0;
+
+        return ghostty_surface_key(surface, .{
+            .action = action,
+            .mods = mods,
+            .consumed_mods = 0,
+            .keycode = native,
+            .text = null,
+            .unshifted_codepoint = unshifted_codepoint,
+            .composing = false,
+        });
     }
 
     /// Returns true if the given key event would trigger a binding

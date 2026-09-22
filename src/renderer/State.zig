@@ -19,6 +19,13 @@ mutex: *std.Io.Mutex,
 /// The terminal data.
 terminal: *terminalpkg.Terminal,
 
+/// Optional terminal used only for presentation. The live terminal above
+/// continues to receive PTY output while this is set. This is used by modal
+/// interfaces such as scrollback search that require stable contents and
+/// coordinates while still allowing the child process to make progress.
+/// Access is protected by `mutex`, just like `terminal`.
+presentation_terminal: ?*terminalpkg.Terminal = null,
+
 /// The terminal inspector, if any. This will be null while the inspector
 /// is not active and will be set when it is active.
 inspector: ?*Inspector = null,
@@ -43,6 +50,11 @@ demand: std.atomic.Value(u32) = .init(0),
 /// `unlockDemand` after a demanding waiter releases the mutex, so that
 /// `yieldToDemand` knows the waiter had its turn.
 handoff_gen: std.atomic.Value(u32) = .init(0),
+
+/// The terminal the renderer should currently present.
+pub inline fn terminalForRender(self: *const State) *terminalpkg.Terminal {
+    return self.presentation_terminal orelse self.terminal;
+}
 
 /// How long `yieldToDemand` sleeps waiting for a demanding waiter to
 /// take its turn before giving up. This bounds how long the IO parse

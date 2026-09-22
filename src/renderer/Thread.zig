@@ -430,6 +430,14 @@ fn drainMailbox(self: *Thread) !void {
                 self.renderer.search_matches_dirty = true;
             },
 
+            .snapshot_highlights => |v| {
+                if (self.renderer.search_matches) |*m| m.arena.deinit();
+                if (self.renderer.search_selected_match) |*m| m.arena.deinit();
+                self.renderer.search_matches = v.matches;
+                self.renderer.search_selected_match = v.selected;
+                self.renderer.search_matches_dirty = true;
+            },
+
             .inspector => |v| {
                 self.flags.has_inspector = v;
             },

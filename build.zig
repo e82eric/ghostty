@@ -233,6 +233,12 @@ pub fn build(b: *std.Build) !void {
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
                 lib_static.install("ghostty-internal-static.lib");
+                const import_lib_install = b.addInstallFileWithDir(
+                    lib_shared.implib.?,
+                    .lib,
+                    "ghostty.lib",
+                );
+                b.getInstallStep().dependOn(&import_lib_install.step);
                 const sample = b.addExecutable(.{
                     .name = "ghostty_win32",
                     .root_module = b.createModule(.{
@@ -248,14 +254,80 @@ pub fn build(b: *std.Build) !void {
                 sample.root_module.addIncludePath(b.path("include"));
                 sample.root_module.addObjectFile(lib_shared.implib.?);
                 sample.root_module.linkSystemLibrary("user32", .{});
+                sample.root_module.linkSystemLibrary("gdi32", .{});
                 const sample_step = b.step("win32-sample", "Build the native Win32 OpenGL terminal sample");
                 sample_step.dependOn(&b.addInstallArtifact(sample, .{}).step);
                 // The import library records ghostty.dll, irrespective of
                 // the internal library's installed filename.
                 sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
+
+                const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                const cargo = b.addSystemCommand(&.{
+                    "cargo",
+                    "build",
+                    "--manifest-path",
+                    b.pathFromRoot("example/rust-egui-terminal/Cargo.toml"),
+                    "--release",
+                    "--target-dir",
+                    b.pathFromRoot(".zig-cache/egui-target"),
+                });
+                cargo.has_side_effects = true;
+                cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/shim.c"));
+                cargo.addFileInput(b.path("include/ghostty.h"));
+                cargo.step.dependOn(&import_lib_install.step);
+                const egui_exe_install = b.addInstallFileWithDir(
+                    .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui.exe") },
+                    .bin,
+                    "ghostty_egui.exe",
+                );
+                egui_exe_install.step.dependOn(&cargo.step);
+                egui_exe_install.step.dependOn(&b.addInstallFileWithDir(
+                    lib_shared.output,
+                    .bin,
+                    "ghostty.dll",
+                ).step);
+                egui_step.dependOn(&egui_exe_install.step);
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");
+                const public_lib_install = b.addInstallFileWithDir(
+                    lib_shared.output,
+                    .lib,
+                    "libghostty.so",
+                );
+                b.getInstallStep().dependOn(&public_lib_install.step);
+
+                const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                const cargo = b.addSystemCommand(&.{
+                    "cargo",
+                    "build",
+                    "--manifest-path",
+                    b.pathFromRoot("example/rust-egui-terminal/Cargo.toml"),
+                    "--release",
+                    "--target-dir",
+                    b.pathFromRoot(".zig-cache/egui-target"),
+                });
+                cargo.has_side_effects = true;
+                cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/shim.c"));
+                cargo.addFileInput(b.path("include/ghostty.h"));
+                cargo.step.dependOn(&public_lib_install.step);
+                const egui_exe_install = b.addInstallFileWithDir(
+                    .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui") },
+                    .bin,
+                    "ghostty_egui",
+                );
+                egui_exe_install.step.dependOn(&cargo.step);
+                egui_step.dependOn(&egui_exe_install.step);
             }
         }
     }

@@ -1412,8 +1412,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 state.lockDemand(global.io());
                 defer state.unlockDemand(global.io());
 
+                // A presentation terminal is an owned, stable snapshot used
+                // by modal UI such as scrollback search. The live terminal
+                // continues to be updated by termio while rendering and
+                // viewport movement operate on this snapshot.
+                const render_terminal = state.terminalForRender();
+
                 // If we're in a synchronized output state, we pause all rendering.
-                if (state.terminal.modes.get(.synchronized_output)) {
+                if (render_terminal.modes.get(.synchronized_output)) {
                     log.debug("synchronized output started, skipping render", .{});
                     return;
                 }
@@ -1424,7 +1430,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Update this BEFORE we update our render state so we can
                 // draw the new scrolled data immediately.
                 if (self.config.scroll_to_bottom_on_output) scroll: {
-                    const br = state.terminal.screens.active.pages.getBottomRight(.screen) orelse break :scroll;
+                    // A frozen presentation must keep its viewport under the
+                    // overlay controller's control.
+                    if (state.presentation_terminal != null) break :scroll;
+                    const br = render_terminal.screens.active.pages.getBottomRight(.screen) orelse break :scroll;
 
                     // If the pin hasn't changed, then don't scroll.
                     if (self.last_bottom_node == @intFromPtr(br.node) and
@@ -1435,7 +1444,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     self.last_bottom_y = br.y;
 
                     // Scroll
-                    state.terminal.scrollViewport(.bottom);
+                    render_terminal.scrollViewport(.bottom);
                 }
 
                 // Begin the update of our terminal state. Work that
@@ -1445,13 +1454,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // hold time as short as possible.
                 try self.terminal_state.beginUpdate(
                     self.alloc,
-                    state.terminal,
+                    render_terminal,
                 );
 
                 // If our terminal state is dirty at all we need to redo
                 // the viewport search.
                 if (self.terminal_state.dirty != .false) {
-                    state.terminal.flags.search_viewport_dirty = true;
+                    render_terminal.flags.search_viewport_dirty = true;
                 }
 
                 // Get our scrollbar out of the terminal. We synchronize
@@ -1459,7 +1468,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // naturally limits the number of calls to this method (it
                 // can be expensive) and also makes it so we don't need another
                 // cross-thread mailbox message within the IO path.
-                const scrollbar = state.terminal.screens.active.pages.scrollbar();
+                const scrollbar = render_terminal.screens.active.pages.scrollbar();
 
                 // Get our preedit state
                 const preedit: ?renderer.State.Preedit = preedit: {
@@ -1475,7 +1484,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // advancing a frame marks the image state dirty.
                 self.kitty_animation_next_ms = next: {
                     // Likely case: we have no kitty images, so do nothing.
-                    const storage = &state.terminal.screens.active.kitty_images;
+                    // Snapshot presentation is intentionally frozen, including
+                    // terminal graphics animations.
+                    if (state.presentation_terminal != null) break :next null;
+                    const storage = &render_terminal.screens.active.kitty_images;
                     if (storage.images.count() == 0) break :next null;
 
                     const now: std.Io.Timestamp = .now(global.io(), .awake);
@@ -1501,14 +1513,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // If we have any virtual references, we must also rebuild our
                 // kitty state on every frame because any cell change can move
                 // an image.
-                if (self.images.kittyRequiresUpdate(state.terminal)) {
+                if (self.images.kittyRequiresUpdate(render_terminal)) {
                     // We need to grab the draw mutex since this updates
                     // our image state that drawFrame uses.
                     self.draw_mutex.lockUncancelable(global.io());
                     defer self.draw_mutex.unlock(global.io());
                     self.images.kittyUpdate(
                         self.alloc,
-                        state.terminal,
+                        render_terminal,
                         .{
                             .width = self.grid_metrics.cell_width,
                             .height = self.grid_metrics.cell_height,

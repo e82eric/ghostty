@@ -62,6 +62,7 @@ typedef void* ghostty_app_t;
 typedef void* ghostty_config_t;
 typedef void* ghostty_surface_t;
 typedef void* ghostty_inspector_t;
+typedef void* ghostty_gl_frame_t;
 
 // All the types below are fully defined and must be kept in sync with
 // their Zig counterparts. Any changes to these types MUST have an associated
@@ -71,6 +72,7 @@ typedef enum {
   GHOSTTY_PLATFORM_MACOS,
   GHOSTTY_PLATFORM_IOS,
   GHOSTTY_PLATFORM_WINDOWS,
+  GHOSTTY_PLATFORM_OPENGL,
 } ghostty_platform_e;
 
 typedef enum {
@@ -495,11 +497,29 @@ typedef struct {
   void* uiview;
 } ghostty_platform_ios_s;
 
+// An OpenGL context owned by the embedder and shared with Ghostty's renderer
+// context. On Windows, window is an HWND and context is an HGLRC. On EGL
+// platforms, display is an EGLDisplay and context is an EGLContext.
+typedef struct {
+  void* window;
+  void* display;
+  void* context;
+} ghostty_platform_opengl_s;
+
 typedef union {
   ghostty_platform_macos_s macos;
   ghostty_platform_ios_s ios;
   struct { void* hwnd; } windows;
+  ghostty_platform_opengl_s opengl;
 } ghostty_platform_u;
+
+typedef struct {
+  ghostty_gl_frame_t handle;
+  uint32_t texture;
+  uint32_t width;
+  uint32_t height;
+  uint64_t generation;
+} ghostty_gl_frame_s;
 
 typedef enum {
   GHOSTTY_SURFACE_CONTEXT_WINDOW = 0,
@@ -1188,6 +1208,12 @@ GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_refresh(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);
+// Takes ownership of the newest externally composited OpenGL frame. The
+// caller must finish all GPU reads from its texture and release the result
+// with ghostty_gl_frame_release before destroying the surface.
+GHOSTTY_API bool ghostty_surface_take_gl_frame(ghostty_surface_t,
+                                                  ghostty_gl_frame_s*);
+GHOSTTY_API void ghostty_gl_frame_release(ghostty_gl_frame_t);
 GHOSTTY_API void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
@@ -1200,6 +1226,13 @@ GHOSTTY_API void ghostty_surface_set_color_scheme(ghostty_surface_t,
 GHOSTTY_API ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_surface_t,
                                                                          ghostty_input_mods_e);
 GHOSTTY_API bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
+// Sends a key using a USB HID usage code instead of a platform-native
+// scancode. This is useful for cross-platform embedders such as winit.
+GHOSTTY_API bool ghostty_surface_key_usb(ghostty_surface_t,
+                                           ghostty_input_action_e,
+                                           ghostty_input_mods_e,
+                                           uint32_t,
+                                           uint32_t);
 GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
                                                    ghostty_input_key_s,
                                                    ghostty_binding_flags_e*);
@@ -1242,6 +1275,52 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_selection_s,
                                               ghostty_text_s*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
+
+/** Return whether the surface is presenting a frozen terminal snapshot. */
+GHOSTTY_API bool ghostty_surface_snapshot_active(ghostty_surface_t);
+
+/** Capture scrollback and begin frozen snapshot presentation. */
+GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
+                                                   uint64_t* generation);
+
+/** End frozen snapshot presentation and reveal the newest live state. */
+GHOSTTY_API bool ghostty_surface_snapshot_end(ghostty_surface_t,
+                                                 uint64_t generation);
+
+/** Return the frozen snapshot grid dimensions. Returns false when inactive. */
+GHOSTTY_API bool ghostty_surface_snapshot_size(ghostty_surface_t,
+                                                  uint64_t generation,
+                                                  uint32_t* columns,
+                                                  uint32_t* screen_rows,
+                                                  uint64_t* total_rows);
+
+/**
+ * Read text from a stable range in the frozen snapshot. Points may use
+ * GHOSTTY_POINT_SCREEN to address the complete scrollback plus active area.
+ * The result must be released with ghostty_surface_free_text().
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_read_text(ghostty_surface_t,
+                                                       uint64_t generation,
+                                                       ghostty_selection_s,
+                                                       ghostty_text_s*);
+
+/**
+ * Atomically replace snapshot highlight ranges. selected may be NULL. The
+ * ranges are copied and remain stable until replaced or snapshot mode ends.
+ * A selected range is also scrolled into view as part of the same update.
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_set_highlights(
+    ghostty_surface_t,
+    uint64_t generation,
+    const ghostty_selection_s* ranges,
+    uintptr_t range_count,
+    const ghostty_selection_s* selected);
+
+/** Scroll the frozen snapshot viewport until range is visible. */
+GHOSTTY_API bool ghostty_surface_snapshot_scroll_to(
+    ghostty_surface_t,
+    uint64_t generation,
+    ghostty_selection_s range);
 
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
