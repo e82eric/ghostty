@@ -4,7 +4,7 @@ pub const OpenGL = @This();
 const std = @import("std");
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
-extern fn ghostty_wgl_create(*anyopaque) ?*anyopaque;
+extern fn ghostty_wgl_create(*anyopaque, ?*anyopaque) ?*anyopaque;
 extern fn ghostty_wgl_enter(*anyopaque, c_int) c_int;
 extern fn ghostty_wgl_leave() void;
 extern fn ghostty_wgl_destroy(*anyopaque) void;
@@ -55,18 +55,54 @@ egl_display: *gl.egl.Display = undefined,
 egl_context: *gl.egl.Context = undefined,
 wgl_context: ?*anyopaque = null,
 wgl_vsync: bool = true,
+external: bool = false,
+output_pool: ?*OutputPool = null,
+
+const ExternalContext = struct {
+    window: ?*anyopaque,
+    display: ?*anyopaque,
+    context: *anyopaque,
+};
+
+fn externalContext(surface: *apprt.Surface) ?ExternalContext {
+    if (comptime !@hasField(apprt.Surface, "platform")) return null;
+    return switch (surface.platform) {
+        .opengl => |v| .{
+            .window = v.window,
+            .display = v.display,
+            .context = v.context,
+        },
+        else => null,
+    };
+}
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
-    if (comptime is_windows) return .{
-        .alloc = alloc,
-        .blending = opts.config.blending,
-        .wgl_context = ghostty_wgl_create(opts.rt_surface.platform.windows.hwnd) orelse
-            return error.WGLContextCreationFailed,
-        .wgl_vsync = opts.config.vsync,
-    };
+    const external = externalContext(opts.rt_surface);
+    const output_pool = if (external != null) try OutputPool.create(alloc) else null;
+    errdefer if (output_pool) |v| v.destroy();
+
+    if (comptime is_windows) {
+        const window, const share = if (external) |v|
+            .{ v.window orelse return error.HWNDMustBeSet, @as(?*anyopaque, v.context) }
+        else
+            .{ opts.rt_surface.platform.windows.hwnd, @as(?*anyopaque, null) };
+
+        return .{
+            .alloc = alloc,
+            .blending = opts.config.blending,
+            .wgl_context = ghostty_wgl_create(window, share) orelse
+                return error.WGLContextCreationFailed,
+            .wgl_vsync = opts.config.vsync,
+            .external = external != null,
+            .output_pool = output_pool,
+        };
+    }
     try egl.load();
 
-    const display: *egl.Display = try .init(egl.c.EGL_DEFAULT_DISPLAY);
+    const display: *egl.Display = if (external) |v|
+        @ptrCast(v.display orelse return error.EGLDisplayMustBeSet)
+    else
+        try .init(egl.c.EGL_DEFAULT_DISPLAY);
 
     log.info("EGL vendor={s}", .{display.queryString(.vendor) orelse "(unknown)"});
     log.info("EGL extensions={s}", .{display.queryString(.extensions) orelse "(unknown)"});
@@ -92,7 +128,8 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
     };
 
     // Create our context.
-    const context = egl.Context.create(display, config, null, &.{
+    const share: ?*egl.Surface = if (external) |v| @ptrCast(v.context) else null;
+    const context = egl.Context.create(display, config, share, &.{
         egl.c.EGL_CONTEXT_MAJOR_VERSION,       MIN_VERSION_MAJOR,
         egl.c.EGL_CONTEXT_MINOR_VERSION,       MIN_VERSION_MINOR,
         egl.c.EGL_CONTEXT_OPENGL_PROFILE_MASK, egl.c.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
@@ -116,10 +153,13 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
         .blending = opts.config.blending,
         .egl_display = display,
         .egl_context = context,
+        .external = external != null,
+        .output_pool = output_pool,
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (self.output_pool) |v| v.destroy();
     if (comptime is_windows) {
         ghostty_wgl_destroy(self.wgl_context.?);
         self.* = undefined;
@@ -254,6 +294,7 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
+    if (self.output_pool) |v| v.deinitResources();
     if (comptime is_windows) {
         gl.finish();
         ghostty_wgl_leave();
@@ -325,7 +366,12 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
 /// of the frame and is responsible for freeing it.
 ///
 /// This runs on the render thread.
-pub fn present(self: *OpenGL, target: Target) !ExportedFrame {
+pub fn directPresentation(self: *const OpenGL) bool {
+    return is_windows and !self.external;
+}
+
+pub fn presentDirect(self: *OpenGL, target: Target) !void {
+    std.debug.assert(self.directPresentation());
     if (comptime is_windows) {
         // Copy encoded sRGB pixels on the GPU to the native window backbuffer.
         try gl.disable(gl.c.GL_FRAMEBUFFER_SRGB);
@@ -337,23 +383,36 @@ pub fn present(self: *OpenGL, target: Target) !ExportedFrame {
         if (ghostty_wgl_swap(self.wgl_context.?) == 0) return error.WGLSwapFailed;
         return;
     }
-    if (target.exportDmabuf(self.egl_display, self.egl_context)) |dmabuf| {
-        return .{ .dmabuf = dmabuf };
-    } else |_| {
-        // If DMABUFs fail, then use CPU buffers
-        return .{ .memory = .{
-            .width = @intCast(target.width),
-            .height = @intCast(target.height),
-            .pixels = try target.readPixelsAlloc(self.alloc),
-            .alloc = self.alloc,
-        } };
+    unreachable;
+}
+
+pub fn exportFrame(self: *OpenGL, target: Target) !ExportedFrame {
+    if (self.external) {
+        return .{ .texture = try self.output_pool.?.exportFrame(target) };
     }
+
+    if (comptime !is_windows) {
+        if (target.exportDmabuf(self.egl_display, self.egl_context)) |dmabuf| {
+            return .{ .dmabuf = dmabuf };
+        } else |_| {
+            // If DMABUFs fail, then use CPU buffers
+            return .{ .memory = .{
+                .width = @intCast(target.width),
+                .height = @intCast(target.height),
+                .pixels = try target.readPixelsAlloc(self.alloc),
+                .alloc = self.alloc,
+            } };
+        }
+    }
+
+    return error.FrameExportUnsupported;
 }
 
 /// A finished frame exported for presentation by the apprt.
-pub const ExportedFrame = if (is_windows) void else union(enum) {
-    dmabuf: Dmabuf,
-    memory: Memory,
+pub const ExportedFrame = union(enum) {
+    texture: TextureFrame,
+    dmabuf: if (is_windows) void else Dmabuf,
+    memory: if (is_windows) void else Memory,
 
     /// RGBA8 pixel data with premultiplied alpha, tightly packed
     /// (`width * 4` bytes per row), in CPU memory.
@@ -370,9 +429,139 @@ pub const ExportedFrame = if (is_windows) void else union(enum) {
 
     pub fn deinit(self: ExportedFrame) void {
         switch (self) {
-            .dmabuf => |v| v.deinit(),
-            .memory => |v| v.deinit(),
+            .texture => |v| v.deinit(),
+            .dmabuf => |v| if (comptime !is_windows) v.deinit(),
+            .memory => |v| if (comptime !is_windows) v.deinit(),
         }
+    }
+};
+
+pub const TextureFrame = struct {
+    pool: *OutputPool,
+    slot: u8,
+    texture: u32,
+    width: u32,
+    height: u32,
+    generation: u64,
+
+    pub fn deinit(self: TextureFrame) void {
+        self.pool.slots[self.slot].state.store(0, .release);
+    }
+};
+
+const OutputPool = struct {
+    alloc: Allocator,
+    slots: [3]Slot = .{ .{}, .{}, .{} },
+    generation: u64 = 0,
+
+    const Slot = struct {
+        // 0 is free, 1 is owned by an exported frame, and 2 is being written.
+        state: std.atomic.Value(u8) = .init(0),
+        texture: ?gl.Texture = null,
+        framebuffer: ?gl.Framebuffer = null,
+        width: u32 = 0,
+        height: u32 = 0,
+
+        fn ensureSize(self: *Slot, width: u32, height: u32) !void {
+            if (self.texture != null and self.width == width and self.height == height) return;
+            self.deinitResources();
+
+            const texture = try gl.Texture.create();
+            errdefer texture.destroy();
+            {
+                const bound = try texture.bind(.@"2d");
+                defer bound.unbind();
+                try bound.parameter(.min_filter, .nearest);
+                try bound.parameter(.mag_filter, .nearest);
+                try bound.parameter(.wrap_s, .clamp_to_edge);
+                try bound.parameter(.wrap_t, .clamp_to_edge);
+                try bound.image2D(0, .rgba, @intCast(width), @intCast(height), .rgba, .unsigned_byte, null);
+                try bound.parameter(.base_level, 0);
+                try bound.parameter(.max_level, 0);
+            }
+
+            const framebuffer = try gl.Framebuffer.create();
+            errdefer framebuffer.destroy();
+            {
+                const bound = try framebuffer.bind(.framebuffer);
+                defer bound.unbind();
+                try bound.texture2D(.color0, .@"2d", texture, 0);
+                if (bound.checkStatus() != .complete) return error.FramebufferIncomplete;
+            }
+
+            self.texture = texture;
+            self.framebuffer = framebuffer;
+            self.width = width;
+            self.height = height;
+        }
+
+        fn deinitResources(self: *Slot) void {
+            if (self.framebuffer) |v| v.destroy();
+            if (self.texture) |v| v.destroy();
+            self.framebuffer = null;
+            self.texture = null;
+            self.width = 0;
+            self.height = 0;
+        }
+    };
+
+    fn create(alloc: Allocator) !*OutputPool {
+        const result = try alloc.create(OutputPool);
+        result.* = .{ .alloc = alloc };
+        return result;
+    }
+
+    fn destroy(self: *OutputPool) void {
+        self.alloc.destroy(self);
+    }
+
+    fn deinitResources(self: *OutputPool) void {
+        for (&self.slots) |*slot| slot.deinitResources();
+    }
+
+    fn exportFrame(self: *OutputPool, target: Target) !TextureFrame {
+        for (&self.slots, 0..) |*slot, i| {
+            if (slot.state.load(.acquire) != 0) continue;
+            slot.state.store(2, .release);
+            errdefer slot.state.store(0, .release);
+
+            const width: u32 = @intCast(target.width);
+            const height: u32 = @intCast(target.height);
+            try slot.ensureSize(width, height);
+
+            try gl.disable(gl.c.GL_FRAMEBUFFER_SRGB);
+            defer gl.enable(gl.c.GL_FRAMEBUFFER_SRGB) catch {};
+            const read = try target.framebuffer.bind(.read);
+            defer read.unbind();
+            const draw = try slot.framebuffer.?.bind(.draw);
+            defer draw.unbind();
+            try gl.blitFramebuffer(
+                0,
+                0,
+                @intCast(width),
+                @intCast(height),
+                0,
+                @intCast(height),
+                @intCast(width),
+                0,
+                .{ .color_buffer_bit = true },
+                .nearest,
+            );
+            gl.finish();
+
+            self.generation +%= 1;
+            slot.state.store(1, .release);
+            return .{
+                .pool = self,
+                .slot = @intCast(i),
+                .texture = slot.texture.?.id,
+                .width = width,
+                .height = height,
+                .generation = self.generation,
+            };
+        }
+
+        return error.NoExportTextureAvailable;
     }
 };
 

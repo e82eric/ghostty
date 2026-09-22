@@ -61,6 +61,14 @@ pub const Message = union(enum) {
     /// no match currently.
     search_selected_match: ?SearchMatch,
 
+    /// Atomically replace externally supplied snapshot highlights and the
+    /// selected highlight. Keeping both in one mailbox item prevents a frame
+    /// from observing a partially updated decoration set.
+    snapshot_highlights: struct {
+        matches: SearchMatches,
+        selected: ?SearchMatch,
+    },
+
     /// Activate or deactivate the inspector.
     inspector: bool,
 

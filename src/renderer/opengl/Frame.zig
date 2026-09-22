@@ -56,8 +56,8 @@ pub inline fn renderPass(
 /// pushing the newly presented and exported frame to the frame queue.
 pub fn complete(self: *const Self, sync: bool) void {
     _ = sync;
-    if (comptime @import("builtin").os.tag == .windows) {
-        const health: Health = if (self.renderer.api.present(self.target.*)) .healthy else |err| failed: {
+    if (self.renderer.api.directPresentation()) {
+        const health: Health = if (self.renderer.api.presentDirect(self.target.*)) .healthy else |err| failed: {
             log.err("failed to present Win32 frame: {}", .{err});
             break :failed .unhealthy;
         };
@@ -74,7 +74,7 @@ pub fn complete(self: *const Self, sync: bool) void {
     // If the frame is healthy, export it and push to the present queue.
     // The apprt pulls from this queue in its snapshot handler.
     if (health == .healthy) frame: {
-        const frame = self.renderer.api.present(self.target.*) catch |err| {
+        const frame = self.renderer.api.exportFrame(self.target.*) catch |err| {
             log.warn("failed to present render target: err={}", .{err});
             break :frame;
         };

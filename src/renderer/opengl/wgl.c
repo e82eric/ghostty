@@ -15,7 +15,7 @@ void *ghostty_wgl_proc(const char *name) {
     return (void *)proc;
 }
 
-void *ghostty_wgl_create(void *window) {
+void *ghostty_wgl_create(void *window, void *share_context) {
     GhosttyWGL *gl = calloc(1, sizeof(*gl));
     if (!gl) return NULL;
     gl->window = window;
@@ -27,8 +27,23 @@ void *ghostty_wgl_create(void *window) {
         .iPixelType = PFD_TYPE_RGBA, .cColorBits = 32, .cAlphaBits = 8,
         .iLayerType = PFD_MAIN_PLANE,
     };
-    int index = ChoosePixelFormat(gl->dc, &format);
-    if (!index || !SetPixelFormat(gl->dc, index, &format)) goto fail;
+    int index = GetPixelFormat(gl->dc);
+    if (!index) {
+        index = ChoosePixelFormat(gl->dc, &format);
+        if (!index || !SetPixelFormat(gl->dc, index, &format)) goto fail;
+    }
+
+    // A shared context is supplied by OpenGL embedders while their context is
+    // current, so the extension entry point is already available. Native WGL
+    // windows need a bootstrap context to load it.
+    if (share_context) {
+        CreateContextAttribs create = (CreateContextAttribs)ghostty_wgl_proc("wglCreateContextAttribsARB");
+        const int attributes[] = { 0x2091, 4, 0x2092, 3, 0x9126, 1, 0 };
+        if (create) gl->context = create(gl->dc, (HGLRC)share_context, attributes);
+        if (!gl->context) goto fail;
+        return gl;
+    }
+
     HGLRC bootstrap = wglCreateContext(gl->dc);
     if (!bootstrap) goto fail;
     if (!wglMakeCurrent(gl->dc, bootstrap)) {

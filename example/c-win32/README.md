@@ -26,6 +26,15 @@ Keyboard input, left-button selection, wheel scrolling, resize, focus, and
 per-monitor DPI events are forwarded to Ghostty. Clipboard integration, IME
 composition, tabs, and the inspector are outside this minimal sample.
 
+Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> to open the native Win32
+search controls. The edit field drives Ghostty's scrollback search and the
+terminal renderer draws its result highlights. Search captures a frozen copy
+of the complete scrollback: the renderer and search navigation use that copy
+while ConPTY output continues to update the live terminal in the background.
+Enter and Shift+Enter select the next and previous matches, and Escape closes
+the controls and reveals the newest live state. This mirrors the egui sample's
+search behavior without involving egui in the overlay.
+
 Presentation runs on Ghostty's renderer thread: the offscreen color target is
 blitted to the window backbuffer on the GPU, then swapped. The initial port
 retains `glFinish` for conservative resource reuse. This is a functional
