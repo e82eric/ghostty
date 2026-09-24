@@ -458,12 +458,6 @@ typedef struct {
   uintptr_t text_len;
 } ghostty_text_s;
 
-/** A half-open UTF-8 byte range within frozen snapshot text. */
-typedef struct {
-  uint64_t start_byte;
-  uint64_t end_byte;
-} ghostty_snapshot_text_range_s;
-
 typedef enum {
   GHOSTTY_POINT_ACTIVE,
   GHOSTTY_POINT_VIEWPORT,
@@ -1281,47 +1275,45 @@ GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
 GHOSTTY_API bool ghostty_surface_snapshot_end(ghostty_surface_t,
                                                  uint64_t generation);
 
-/**
- * Read the complete frozen snapshot as UTF-8. Soft-wrapped rows are joined;
- * hard line breaks remain in the result. Byte offsets into this text may be
- * passed to ghostty_surface_snapshot_set_ordered_text_highlights(). The result
- * must be released with ghostty_surface_free_text().
+/** A sequential view of frozen snapshot text and its byte-to-cell positions.
+ * Use each cursor from one thread at a time. The returned pointers remain
+ * valid until the next cursor call. Close the cursor before destroying its
+ * surface. The next operation returns 1 for a chunk, 0 at end of text,
+ * and -1 for a stale snapshot or formatting error.
  */
-GHOSTTY_API bool ghostty_surface_snapshot_read_all_text(
-    ghostty_surface_t,
-    uint64_t generation,
-    ghostty_text_s*);
+typedef struct ghostty_snapshot_text_cursor_s* ghostty_snapshot_text_cursor_t;
+typedef struct {
+    uint16_t x;
+    uint32_t y;
+} ghostty_snapshot_text_point_s;
+typedef struct {
+    const char* text;
+    const ghostty_snapshot_text_point_s* points;
+    uintptr_t len;
+    uint64_t row_base;
+    uint16_t start_y;
+} ghostty_snapshot_text_chunk_s;
+GHOSTTY_API ghostty_snapshot_text_cursor_t ghostty_surface_snapshot_text_cursor_new(
+    ghostty_surface_t, uint64_t generation);
+GHOSTTY_API void ghostty_surface_snapshot_text_cursor_free(ghostty_snapshot_text_cursor_t);
+GHOSTTY_API bool ghostty_surface_snapshot_text_cursor_reset(ghostty_snapshot_text_cursor_t);
+GHOSTTY_API int ghostty_surface_snapshot_text_cursor_next(
+    ghostty_snapshot_text_cursor_t, ghostty_snapshot_text_chunk_s*);
 
-/**
- * Atomically replace snapshot highlights using half-open UTF-8 byte ranges
- * returned by ghostty_surface_snapshot_read_all_text(). selected may be NULL.
- * Ranges must be nonoverlapping and ordered from newest to oldest (descending
- * byte offsets).
- * Only ranges overlapping the current viewport are prepared for rendering.
- * reveal_selected scrolls to the selected match; pass false when refreshing
- * highlights after the user scrolls the viewport.
- */
-GHOSTTY_API bool ghostty_surface_snapshot_set_ordered_text_highlights(
-    ghostty_surface_t,
-    uint64_t generation,
-    const ghostty_snapshot_text_range_s* ranges,
-    uintptr_t range_count,
-    const ghostty_snapshot_text_range_s* selected,
-    bool reveal_selected);
-
-/**
- * Update only the selected text highlight. Returns false when navigation
- * changes the viewport, in which case the caller must republish the matches.
- */
-GHOSTTY_API bool ghostty_surface_snapshot_select_text_highlight(
-    ghostty_surface_t,
-    uint64_t generation,
-    ghostty_snapshot_text_range_s selected);
-
-/** Whether the visible highlight set needs rebuilding after viewport movement. */
-GHOSTTY_API bool ghostty_surface_snapshot_text_highlights_need_refresh(
-    ghostty_surface_t,
-    uint64_t generation);
+typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
+typedef struct {
+    ghostty_snapshot_cell_s start;
+    ghostty_snapshot_cell_s end; /* inclusive */
+} ghostty_snapshot_cell_range_s;
+/** Ranges are nonoverlapping, newest first, in frozen screen coordinates. */
+GHOSTTY_API bool ghostty_surface_snapshot_set_ordered_cell_highlights(
+    ghostty_surface_t, uint64_t generation,
+    const ghostty_snapshot_cell_range_s*, uintptr_t count,
+    const ghostty_snapshot_cell_range_s* selected, bool reveal_selected);
+GHOSTTY_API bool ghostty_surface_snapshot_select_cell_highlight(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_range_s selected);
+GHOSTTY_API bool ghostty_surface_snapshot_cell_highlights_need_refresh(
+    ghostty_surface_t, uint64_t generation);
 
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
