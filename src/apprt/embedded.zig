@@ -1627,6 +1627,17 @@ pub const CAPI = struct {
 
     const SnapshotCell = extern struct { x: u32, y: u64 };
     const SnapshotCellRange = extern struct { start: SnapshotCell, end: SnapshotCell };
+    const SnapshotCopyState = extern struct {
+        cell: SnapshotCell,
+        columns: u32,
+        rows: u64,
+    };
+    const SnapshotCopyView = extern struct {
+        viewport_top: u64,
+        total_rows: u64,
+        viewport_rows: u32,
+        columns: u32,
+    };
 
     const SnapshotAnchor = struct { pin: terminal.PageList.Pin, row: u64 };
 
@@ -1671,6 +1682,96 @@ pub const CAPI = struct {
     fn snapshotViewportAnchor(screen: *terminal.Screen) ?SnapshotAnchor {
         const rows = snapshotViewportRows(screen) orelse return null;
         return .{ .pin = screen.pages.getTopLeft(.viewport), .row = rows.start };
+    }
+
+    export fn ghostty_surface_snapshot_copy_cursor_origin(
+        surface: *Surface,
+        generation: u64,
+        result: *SnapshotCopyState,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        const point = screen.pages.pointFromPin(.screen, screen.cursor.page_pin.*) orelse return false;
+        result.* = .{
+            .cell = .{ .x = point.screen.x, .y = point.screen.y },
+            .columns = screen.pages.cols,
+            .rows = screen.pages.total_rows,
+        };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_copy_view(
+        surface: *Surface,
+        generation: u64,
+        result: *SnapshotCopyView,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        const pages = &screen.pages;
+        const scrollbar = pages.scrollbar();
+        // The no-scrollback scrollbar deliberately reports only visible rows,
+        // whereas snapshot cells use coordinates across the full page list.
+        const top = if (scrollbar.total == pages.total_rows)
+            scrollbar.offset
+        else
+            (snapshotViewportRows(screen) orelse return false).start;
+        result.* = .{
+            .viewport_top = top,
+            .total_rows = pages.total_rows,
+            .viewport_rows = pages.rows,
+            .columns = pages.cols,
+        };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_copy_cursor_set(
+        surface: *Surface,
+        generation: u64,
+        requested: SnapshotCell,
+        snap_right: bool,
+        result: *SnapshotCell,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        {
+            state.mutex.lockUncancelable(global.io());
+            defer state.mutex.unlock(global.io());
+            if (surface.core_surface.presentation_snapshot_generation != generation or
+                surface.core_surface.presentation_snapshot == null) return false;
+            const t = state.presentation_terminal orelse return false;
+            const screen = t.screens.active;
+            var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
+            if (pin.rowAndCell().cell.wide == .spacer_tail) {
+                if (snap_right and pin.x + 1 < pin.node.cols()) {
+                    pin.x += 1;
+                } else if (pin.x > 0) {
+                    pin.x -= 1;
+                }
+            }
+            const viewport = snapshotViewportRows(screen) orelse return false;
+            if (requested.y < viewport.start) {
+                screen.scroll(.{ .row = std.math.cast(usize, requested.y) orelse return false });
+                t.flags.dirty.clear = true;
+            } else if (requested.y >= viewport.end) {
+                const height = viewport.end - viewport.start;
+                const top = requested.y - height + 1;
+                screen.scroll(.{ .row = std.math.cast(usize, top) orelse return false });
+                t.flags.dirty.clear = true;
+            }
+            state.copy_cursor_pin = pin;
+            result.* = .{ .x = pin.x, .y = requested.y };
+        }
+        surface.core_surface.renderer_thread.wakeup.notify() catch {};
+        return true;
     }
 
     export fn ghostty_surface_snapshot_set_ordered_cell_highlights(

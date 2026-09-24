@@ -295,6 +295,7 @@ pub fn beginPresentationSnapshot(self: *Surface) !void {
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     self.renderer_state.presentation_terminal = snapshot_terminal;
+    self.renderer_state.copy_cursor_pin = null;
     self.presentation_snapshot = snapshot_terminal;
     self.presentation_snapshot_generation +%= 1;
     if (self.presentation_snapshot_generation == 0) {
@@ -315,6 +316,7 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     if (self.renderer_state.presentation_terminal == snapshot_terminal) {
         self.renderer_state.presentation_terminal = null;
     }
+    self.renderer_state.copy_cursor_pin = null;
     self.renderer_state.terminal.flags.dirty.clear = true;
     self.presentation_snapshot = null;
     self.snapshot_cell_highlight_viewport = null;

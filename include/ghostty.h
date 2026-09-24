@@ -1302,6 +1302,29 @@ GHOSTTY_API int ghostty_surface_snapshot_text_cursor_next(
 
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
 typedef struct {
+    ghostty_snapshot_cell_s cell;
+    uint32_t columns;
+    uint64_t rows;
+} ghostty_snapshot_copy_state_s;
+/** The initial insertion-cursor cell and frozen screen dimensions. */
+GHOSTTY_API bool ghostty_surface_snapshot_copy_cursor_origin(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_copy_state_s*);
+typedef struct {
+    uint64_t viewport_top;
+    uint64_t total_rows;
+    uint32_t viewport_rows;
+    uint32_t columns;
+} ghostty_snapshot_copy_view_s;
+/** Current frozen viewport in the same row coordinates as snapshot cells. */
+GHOSTTY_API bool ghostty_surface_snapshot_copy_view(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_copy_view_s*);
+/** Set a steady block cursor over the frozen scrollback and reveal its cell.
+ * snap_right skips a wide character's trailing cell when moving right.
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_copy_cursor_set(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_s requested,
+    bool snap_right, ghostty_snapshot_cell_s* resolved);
+typedef struct {
     ghostty_snapshot_cell_s start;
     ghostty_snapshot_cell_s end; /* inclusive */
 } ghostty_snapshot_cell_range_s;
