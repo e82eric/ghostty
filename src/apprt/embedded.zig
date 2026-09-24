@@ -1627,16 +1627,22 @@ pub const CAPI = struct {
 
     const SnapshotCell = extern struct { x: u32, y: u64 };
     const SnapshotCellRange = extern struct { start: SnapshotCell, end: SnapshotCell };
-    const SnapshotCopyState = extern struct {
-        cell: SnapshotCell,
-        columns: u32,
-        rows: u64,
-    };
-    const SnapshotCopyView = extern struct {
+    const SnapshotView = extern struct {
+        cursor: SnapshotCell,
         viewport_top: u64,
         total_rows: u64,
         viewport_rows: u32,
         columns: u32,
+    };
+    const SnapshotDecorationStyle = extern struct {
+        foreground_rgb: u32,
+        background_rgb: u32,
+        flags: u32,
+    };
+    const SnapshotDecorationLayer = extern struct {
+        ranges: ?[*]const SnapshotCellRange,
+        range_count: usize,
+        style: SnapshotDecorationStyle,
     };
 
     const SnapshotAnchor = struct { pin: terminal.PageList.Pin, row: u64 };
@@ -1684,10 +1690,10 @@ pub const CAPI = struct {
         return .{ .pin = screen.pages.getTopLeft(.viewport), .row = rows.start };
     }
 
-    export fn ghostty_surface_snapshot_copy_cursor_origin(
+    export fn ghostty_surface_snapshot_view(
         surface: *Surface,
         generation: u64,
-        result: *SnapshotCopyState,
+        result: *SnapshotView,
     ) bool {
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
@@ -1697,26 +1703,6 @@ pub const CAPI = struct {
         const t = state.presentation_terminal orelse return false;
         const screen = t.screens.active;
         const point = screen.pages.pointFromPin(.screen, screen.cursor.page_pin.*) orelse return false;
-        result.* = .{
-            .cell = .{ .x = point.screen.x, .y = point.screen.y },
-            .columns = screen.pages.cols,
-            .rows = screen.pages.total_rows,
-        };
-        return true;
-    }
-
-    export fn ghostty_surface_snapshot_copy_view(
-        surface: *Surface,
-        generation: u64,
-        result: *SnapshotCopyView,
-    ) bool {
-        const state = &surface.core_surface.renderer_state;
-        state.mutex.lockUncancelable(global.io());
-        defer state.mutex.unlock(global.io());
-        if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
-        const screen = t.screens.active;
         const pages = &screen.pages;
         const scrollbar = pages.scrollbar();
         // The no-scrollback scrollbar deliberately reports only visible rows,
@@ -1726,6 +1712,7 @@ pub const CAPI = struct {
         else
             (snapshotViewportRows(screen) orelse return false).start;
         result.* = .{
+            .cursor = .{ .x = point.screen.x, .y = point.screen.y },
             .viewport_top = top,
             .total_rows = pages.total_rows,
             .viewport_rows = pages.rows,
@@ -1734,53 +1721,12 @@ pub const CAPI = struct {
         return true;
     }
 
-    export fn ghostty_surface_snapshot_copy_cursor_set(
+    export fn ghostty_surface_snapshot_resolve_cell(
         surface: *Surface,
         generation: u64,
         requested: SnapshotCell,
         snap_right: bool,
         result: *SnapshotCell,
-    ) bool {
-        const state = &surface.core_surface.renderer_state;
-        {
-            state.mutex.lockUncancelable(global.io());
-            defer state.mutex.unlock(global.io());
-            if (surface.core_surface.presentation_snapshot_generation != generation or
-                surface.core_surface.presentation_snapshot == null) return false;
-            const t = state.presentation_terminal orelse return false;
-            const screen = t.screens.active;
-            var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
-            if (pin.rowAndCell().cell.wide == .spacer_tail) {
-                if (snap_right and pin.x + 1 < pin.node.cols()) {
-                    pin.x += 1;
-                } else if (pin.x > 0) {
-                    pin.x -= 1;
-                }
-            }
-            const viewport = snapshotViewportRows(screen) orelse return false;
-            if (requested.y < viewport.start) {
-                screen.scroll(.{ .row = std.math.cast(usize, requested.y) orelse return false });
-                t.flags.dirty.clear = true;
-            } else if (requested.y >= viewport.end) {
-                const height = viewport.end - viewport.start;
-                const top = requested.y - height + 1;
-                screen.scroll(.{ .row = std.math.cast(usize, top) orelse return false });
-                t.flags.dirty.clear = true;
-            }
-            state.copy_cursor_pin = pin;
-            result.* = .{ .x = pin.x, .y = requested.y };
-        }
-        surface.core_surface.renderer_thread.wakeup.notify() catch {};
-        return true;
-    }
-
-    export fn ghostty_surface_snapshot_set_ordered_cell_highlights(
-        surface: *Surface,
-        generation: u64,
-        ranges: ?[*]const SnapshotCellRange,
-        range_count: usize,
-        selected: ?*const SnapshotCellRange,
-        reveal_selected: bool,
     ) bool {
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
@@ -1789,31 +1735,95 @@ pub const CAPI = struct {
             surface.core_surface.presentation_snapshot == null) return false;
         const t = state.presentation_terminal orelse return false;
         const screen = t.screens.active;
-        const core_selected = if (selected) |s| snapshotCellSelection(
-            screen,
-            s.*,
-            snapshotViewportAnchor(screen),
-        ) orelse return false else null;
-        if (core_selected) |sel| if (reveal_selected) {
-            snapshotScrollSelectedIntoView(screen, sel) catch return false;
-            t.flags.dirty.clear = true;
-        };
+        var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
+        if (pin.rowAndCell().cell.wide == .spacer_tail) {
+            if (snap_right and pin.x + 1 < pin.node.cols()) {
+                pin.x += 1;
+            } else if (pin.x > 0) {
+                pin.x -= 1;
+            }
+        }
+        result.* = .{ .x = pin.x, .y = requested.y };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_apply_decorations(
+        surface: *Surface,
+        generation: u64,
+        layers_ptr: ?[*]const SnapshotDecorationLayer,
+        layer_count: usize,
+        reveal: ?*const SnapshotCell,
+    ) bool {
+        if (layer_count > 254) return false;
+        const layers = if (layers_ptr) |ptr| ptr[0..layer_count] else if (layer_count == 0) &.{} else return false;
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        if (reveal) |cell| {
+            if (cell.y >= screen.pages.total_rows or cell.x >= screen.pages.cols) return false;
+            _ = snapshotCellPin(screen, cell.*, snapshotViewportAnchor(screen)) orelse return false;
+            const before = snapshotViewportRows(screen) orelse return false;
+            if (cell.y < before.start) {
+                screen.scroll(.{ .row = std.math.cast(usize, cell.y) orelse return false });
+                t.flags.dirty.clear = true;
+            } else if (cell.y >= before.end) {
+                const height = before.end - before.start;
+                screen.scroll(.{ .row = std.math.cast(usize, cell.y - height + 1) orelse return false });
+                t.flags.dirty.clear = true;
+            }
+        }
         const viewport = snapshotViewportRows(screen) orelse return false;
         const anchor: SnapshotAnchor = .{
             .pin = screen.pages.getTopLeft(.viewport),
             .row = viewport.start,
         };
-        const ordered = if (ranges) |ptr| ptr[0..range_count] else if (range_count == 0) &.{} else return false;
-        const visible = snapshotVisibleOrderedCellRanges(ordered, viewport);
-        const alloc = global.alloc();
-        const core_ranges = alloc.alloc(terminal.Selection, visible.len) catch return false;
-        defer alloc.free(core_ranges);
-        for (visible, core_ranges) |range, *dst| {
-            dst.* = snapshotCellSelection(screen, range, anchor) orelse return false;
+        var arena = std.heap.ArenaAllocator.init(global.alloc());
+        var owned = true;
+        defer if (owned) arena.deinit();
+        const alloc = arena.allocator();
+        const core_layers = alloc.alloc(renderer.Message.DecorationLayer, layers.len) catch return false;
+        for (layers, core_layers) |layer, *dst| {
+            if (layer.style.flags & ~@as(u32, 3) != 0) return false;
+            const ordered = if (layer.ranges) |ptr| ptr[0..layer.range_count] else if (layer.range_count == 0) &.{} else return false;
+            const visible = snapshotVisibleOrderedCellRanges(ordered, viewport);
+            const flattened = alloc.alloc(terminal.highlight.Flattened, visible.len) catch return false;
+            for (visible, flattened) |range, *item| {
+                const sel = snapshotCellSelection(screen, range, anchor) orelse return false;
+                item.* = terminal.highlight.Flattened.init(
+                    alloc,
+                    sel.topLeft(screen),
+                    sel.bottomRight(screen),
+                ) catch return false;
+            }
+            dst.* = .{
+                .ranges = flattened,
+                .style = .{
+                    .foreground = if (layer.style.flags & 1 != 0) snapshotRgb(layer.style.foreground_rgb) else null,
+                    .background = if (layer.style.flags & 2 != 0) snapshotRgb(layer.style.background_rgb) else null,
+                },
+            };
         }
-        snapshotSetCoreHighlightsLocked(surface, t, core_ranges, core_selected) catch return false;
-        surface.core_surface.snapshot_cell_highlight_viewport = viewport;
+        _ = surface.core_surface.renderer_thread.mailbox.push(
+            global.io(),
+            .{ .snapshot_decorations = .{ .arena = arena, .layers = core_layers } },
+            .{ .forever = {} },
+        );
+        owned = false;
+        surface.core_surface.snapshot_decoration_viewport = viewport;
+        surface.core_surface.renderer_thread.wakeup.notify() catch {};
         return true;
+    }
+
+    fn snapshotRgb(rgb: u32) terminal.color.RGB {
+        return .{
+            .r = @truncate(rgb >> 16),
+            .g = @truncate(rgb >> 8),
+            .b = @truncate(rgb),
+        };
     }
 
     fn snapshotVisibleOrderedCellRanges(
@@ -1835,41 +1845,7 @@ pub const CAPI = struct {
         return ranges[visible_start..first];
     }
 
-    export fn ghostty_surface_snapshot_select_cell_highlight(
-        surface: *Surface,
-        generation: u64,
-        selected: SnapshotCellRange,
-    ) bool {
-        const state = &surface.core_surface.renderer_state;
-        state.mutex.lockUncancelable(global.io());
-        defer state.mutex.unlock(global.io());
-        if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
-        const screen = t.screens.active;
-        const sel = snapshotCellSelection(screen, selected, snapshotViewportAnchor(screen)) orelse return false;
-        snapshotScrollSelectedIntoView(screen, sel) catch return false;
-        const viewport = snapshotViewportRows(screen) orelse return false;
-        if (!std.meta.eql(viewport, surface.core_surface.snapshot_cell_highlight_viewport orelse return false)) return false;
-        var arena = std.heap.ArenaAllocator.init(global.alloc());
-        const match = terminal.highlight.Flattened.init(
-            arena.allocator(),
-            sel.topLeft(screen),
-            sel.bottomRight(screen),
-        ) catch {
-            arena.deinit();
-            return false;
-        };
-        _ = surface.core_surface.renderer_thread.mailbox.push(
-            global.io(),
-            .{ .search_selected_match = .{ .arena = arena, .match = match } },
-            .{ .forever = {} },
-        );
-        surface.core_surface.renderer_thread.wakeup.notify() catch {};
-        return true;
-    }
-
-    export fn ghostty_surface_snapshot_cell_highlights_need_refresh(
+    export fn ghostty_surface_snapshot_decorations_need_refresh(
         surface: *Surface,
         generation: u64,
     ) bool {
@@ -1880,7 +1856,7 @@ pub const CAPI = struct {
             surface.core_surface.presentation_snapshot == null) return false;
         const t = state.presentation_terminal orelse return false;
         const viewport = snapshotViewportRows(t.screens.active) orelse return false;
-        return !std.meta.eql(viewport, surface.core_surface.snapshot_cell_highlight_viewport orelse return true);
+        return !std.meta.eql(viewport, surface.core_surface.snapshot_decoration_viewport orelse return true);
     }
 
     export fn ghostty_surface_snapshot_text_cursor_new(
@@ -2433,79 +2409,6 @@ pub const CAPI = struct {
         }
         surface.core_surface.endPresentationSnapshot();
         return true;
-    }
-
-    fn snapshotSetCoreHighlightsLocked(
-        surface: *Surface,
-        t: *terminal.Terminal,
-        ranges: []const terminal.Selection,
-        selected: ?terminal.Selection,
-    ) !void {
-        var matches_arena = std.heap.ArenaAllocator.init(global.alloc());
-        errdefer matches_arena.deinit();
-        const matches_alloc = matches_arena.allocator();
-        const matches = try matches_alloc.alloc(
-            terminal.highlight.Flattened,
-            ranges.len,
-        );
-
-        var selected_message: ?renderer.Message.SearchMatch = null;
-        errdefer if (selected_message) |*value| value.arena.deinit();
-
-        const screen = t.screens.active;
-        for (ranges, matches) |sel, *dst| {
-            dst.* = try .init(
-                matches_alloc,
-                sel.topLeft(screen),
-                sel.bottomRight(screen),
-            );
-        }
-
-        if (selected) |sel| {
-            var arena = std.heap.ArenaAllocator.init(global.alloc());
-            errdefer arena.deinit();
-            selected_message = .{
-                .arena = arena,
-                .match = try .init(
-                    arena.allocator(),
-                    sel.topLeft(screen),
-                    sel.bottomRight(screen),
-                ),
-            };
-        }
-
-        _ = surface.core_surface.renderer_thread.mailbox.push(
-            global.io(),
-            .{ .snapshot_highlights = .{
-                .matches = .{
-                    .arena = matches_arena,
-                    .matches = matches,
-                },
-                .selected = selected_message,
-            } },
-            .{ .forever = {} },
-        );
-        surface.core_surface.renderer_thread.wakeup.notify() catch {};
-    }
-
-    fn snapshotScrollSelectedIntoView(
-        screen: *terminal.Screen,
-        sel: terminal.Selection,
-    ) !void {
-        const pages = &screen.pages;
-        const selected = pages.pointFromPin(.screen, sel.topLeft(screen)) orelse
-            return error.InvalidRange;
-        const top = pages.pointFromPin(.screen, pages.getTopLeft(.viewport)) orelse
-            return error.InvalidRange;
-        const bottom_pin = pages.getBottomRight(.viewport) orelse
-            return error.InvalidRange;
-        const bottom = pages.pointFromPin(.screen, bottom_pin) orelse
-            return error.InvalidRange;
-        if (selected.screen.y < top.screen.y or
-            selected.screen.y > bottom.screen.y)
-        {
-            screen.scroll(.{ .row = selected.screen.y });
-        }
     }
 
     /// Tell the surface that it needs to schedule a render

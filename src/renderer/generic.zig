@@ -160,6 +160,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// that do not exist anymore). These must be validated prior to use.
         search_matches: ?renderer.Message.SearchMatches,
         search_selected_match: ?renderer.Message.SearchMatch,
+        snapshot_decorations: ?renderer.Message.SnapshotDecorations,
         search_matches_dirty: bool,
 
         /// The current set of cells to render. This is rebuilt on every frame
@@ -725,6 +726,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .last_bottom_y = 0,
                 .search_matches = null,
                 .search_selected_match = null,
+                .snapshot_decorations = null,
                 .search_matches_dirty = false,
 
                 // Render state
@@ -818,6 +820,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
             if (self.search_matches) |*m| m.arena.deinit();
+            if (self.snapshot_decorations) |*m| m.arena.deinit();
 
             self.latest_frame.deinit(global.io());
 
@@ -1345,7 +1348,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 preedit: ?renderer.State.Preedit,
                 scrollbar: terminal.Scrollbar,
                 overlay_features: []const Overlay.Feature,
-                copy_cursor: ?terminal.Coordinate,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1506,23 +1508,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     ) catch &.{};
                 };
 
-                const copy_cursor: ?terminal.Coordinate = copy: {
-                    if (state.presentation_terminal == null) break :copy null;
-                    const pin = state.copy_cursor_pin orelse break :copy null;
-                    const pt = render_terminal.screens.active.pages.pointFromPin(.viewport, pin) orelse
-                        break :copy null;
-                    if (pt.viewport.y >= render_terminal.screens.active.pages.rows)
-                        break :copy null;
-                    break :copy pt.coord();
-                };
-
                 break :critical .{
                     .links = links,
                     .mouse = state.mouse,
                     .preedit = preedit,
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
-                    .copy_cursor = copy_cursor,
                 };
             };
 
@@ -1530,26 +1521,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // within it. This must be done before anything reads the
             // render state (e.g. rebuildCells).
             self.terminal_state.endUpdate();
-
-            // Present the copy-mode cursor using the existing terminal cursor
-            // renderer, without moving the terminal's insertion cursor. The
-            // row data is owned by RenderState and safe after releasing the
-            // terminal mutex.
-            if (critical.copy_cursor) |point| {
-                const cell = self.terminal_state.row_data.items(.cells)[point.y].get(point.x);
-                self.terminal_state.cursor.viewport = .{
-                    .x = point.x,
-                    .y = @intCast(point.y),
-                    .wide_tail = cell.raw.wide == .spacer_tail,
-                };
-                self.terminal_state.cursor.cell = cell.raw;
-                self.terminal_state.cursor.style = cell.style;
-                self.terminal_state.cursor.visual_style = .block;
-                self.terminal_state.cursor.password_input = false;
-                self.terminal_state.cursor.visible = true;
-                self.terminal_state.cursor.blinking = false;
-                critical.preedit = null;
-            }
 
             // Outside the critical area we can update our links to contain
             // our regex results.
@@ -1586,6 +1557,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // NOTE: The order below matters. Highlights added earlier
                 // will take priority.
+
+                if (self.snapshot_decorations) |decorations| {
+                    for (decorations.layers, 0..) |layer, index| {
+                        self.terminal_state.updateHighlightsFlattened(
+                            self.alloc,
+                            @intCast(index + 2),
+                            layer.ranges,
+                        ) catch |err| {
+                            log.warn("error updating snapshot decoration err={}", .{err});
+                        };
+                    }
+                }
 
                 if (self.search_selected_match) |m| {
                     self.terminal_state.updateHighlightsFlattened(
@@ -3047,11 +3030,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .{};
 
                 // True if this cell is selected
-                const selected: enum {
+                const selected: union(enum) {
                     false,
                     selection,
                     search,
                     search_selected,
+                    decoration: renderer.Message.DecorationStyle,
                 } = selected: {
                     // Order below matters for precedence.
 
@@ -3072,11 +3056,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         if (x_compare >= hl.range[0] and
                             x_compare <= hl.range[1])
                         {
-                            const tag: HighlightTag = @enumFromInt(hl.tag);
-                            break :selected switch (tag) {
-                                .search_match => .search,
-                                .search_match_selected => .search_selected,
-                            };
+                            if (hl.tag >= 2) {
+                                if (self.snapshot_decorations) |decorations| {
+                                    const index = hl.tag - 2;
+                                    if (index < decorations.layers.len)
+                                        break :selected .{ .decoration = decorations.layers[index].style };
+                                }
+                            } else {
+                                const tag: HighlightTag = @enumFromInt(hl.tag);
+                                break :selected switch (tag) {
+                                    .search_match => .search,
+                                    .search_match_selected => .search_selected,
+                                };
+                            }
                         }
                     }
 
@@ -3120,6 +3112,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .@"cell-foreground" => if (style.flags.inverse) bg_style else fg_style,
                         .@"cell-background" => if (style.flags.inverse) fg_style else bg_style,
                     },
+
+                    .decoration => |decoration| decoration.background orelse if (style.flags.inverse != isCovering(cell.codepoint()))
+                        fg_style
+                    else
+                        bg_style,
 
                     // Not selected
                     .false => if (style.flags.inverse != isCovering(cell.codepoint()))
@@ -3165,6 +3162,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             .@"cell-background" => if (style.flags.inverse) fg_style else final_bg,
                         },
 
+                        .decoration => |decoration| decoration.foreground orelse if (style.flags.inverse)
+                            final_bg
+                        else
+                            fg_style,
+
                         .false => if (style.flags.inverse)
                             final_bg
                         else
@@ -3187,7 +3189,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         const default: u8 = 255;
 
                         // Cells that are selected should be fully opaque.
-                        if (selected != .false) break :bg_alpha default;
+                        const decorated_bg = switch (selected) {
+                            .false => false,
+                            .decoration => |decoration| decoration.background != null,
+                            else => true,
+                        };
+                        if (decorated_bg) break :bg_alpha default;
 
                         // Cells that are reversed should be fully opaque.
                         if (style.flags.inverse) break :bg_alpha default;

@@ -183,7 +183,7 @@ search: ?Search = null,
 /// their own matching and interaction logic.
 presentation_snapshot: ?*terminal.Terminal = null,
 presentation_snapshot_generation: u64 = 0,
-snapshot_cell_highlight_viewport: ?SnapshotViewport = null,
+snapshot_decoration_viewport: ?SnapshotViewport = null,
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
@@ -295,7 +295,6 @@ pub fn beginPresentationSnapshot(self: *Surface) !void {
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     self.renderer_state.presentation_terminal = snapshot_terminal;
-    self.renderer_state.copy_cursor_pin = null;
     self.presentation_snapshot = snapshot_terminal;
     self.presentation_snapshot_generation +%= 1;
     if (self.presentation_snapshot_generation == 0) {
@@ -316,10 +315,9 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     if (self.renderer_state.presentation_terminal == snapshot_terminal) {
         self.renderer_state.presentation_terminal = null;
     }
-    self.renderer_state.copy_cursor_pin = null;
     self.renderer_state.terminal.flags.dirty.clear = true;
     self.presentation_snapshot = null;
-    self.snapshot_cell_highlight_viewport = null;
+    self.snapshot_decoration_viewport = null;
     self.renderer_state.mutex.unlock(global.io());
 
     // Clear decorations before asking for the first live frame. The renderer
@@ -327,10 +325,7 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     // evaluated against the live terminal.
     const empty_arena = std.heap.ArenaAllocator.init(self.alloc);
     _ = self.renderer_thread.mailbox.push(global.io(), .{
-        .snapshot_highlights = .{
-            .matches = .{ .arena = empty_arena, .matches = &.{} },
-            .selected = null,
-        },
+        .snapshot_decorations = .{ .arena = empty_arena, .layers = &.{} },
     }, .{ .forever = {} });
 
     snapshot_terminal.deinit(self.alloc);

@@ -61,13 +61,8 @@ pub const Message = union(enum) {
     /// no match currently.
     search_selected_match: ?SearchMatch,
 
-    /// Atomically replace externally supplied snapshot highlights and the
-    /// selected highlight. Keeping both in one mailbox item prevents a frame
-    /// from observing a partially updated decoration set.
-    snapshot_highlights: struct {
-        matches: SearchMatches,
-        selected: ?SearchMatch,
-    },
+    /// Atomically replace all presentation-only decoration layers.
+    snapshot_decorations: SnapshotDecorations,
 
     /// Activate or deactivate the inspector.
     inspector: bool,
@@ -83,6 +78,21 @@ pub const Message = union(enum) {
     pub const SearchMatch = struct {
         arena: ArenaAllocator,
         match: terminal.highlight.Flattened,
+    };
+
+    pub const DecorationStyle = struct {
+        foreground: ?terminal.color.RGB = null,
+        background: ?terminal.color.RGB = null,
+    };
+
+    pub const DecorationLayer = struct {
+        style: DecorationStyle,
+        ranges: []const terminal.highlight.Flattened,
+    };
+
+    pub const SnapshotDecorations = struct {
+        arena: ArenaAllocator,
+        layers: []const DecorationLayer,
     };
 
     /// Initialize a change_config message.
