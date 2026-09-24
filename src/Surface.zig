@@ -189,10 +189,12 @@ search: ?Search = null,
 /// their own matching and interaction logic.
 presentation_snapshot: ?*terminal.Terminal = null,
 presentation_snapshot_generation: u64 = 0,
-presentation_snapshot_text: ?terminal.SnapshotTextIndex = null,
+snapshot_cell_highlight_viewport: ?SnapshotViewport = null,
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
+
+pub const SnapshotViewport = struct { start: usize, end: usize };
 
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
@@ -321,8 +323,7 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     }
     self.renderer_state.terminal.flags.dirty.clear = true;
     self.presentation_snapshot = null;
-    var snapshot_text = self.presentation_snapshot_text;
-    self.presentation_snapshot_text = null;
+    self.snapshot_cell_highlight_viewport = null;
     self.renderer_state.mutex.unlock(global.io());
 
     // Clear decorations before asking for the first live frame. The renderer
@@ -336,7 +337,6 @@ pub fn endPresentationSnapshot(self: *Surface) void {
         },
     }, .{ .forever = {} });
 
-    if (snapshot_text) |*value| value.deinit(global.alloc());
     snapshot_terminal.deinit(self.alloc);
     self.alloc.destroy(snapshot_terminal);
     self.queueRender() catch |err| {
@@ -2143,23 +2143,7 @@ pub fn dumpTextLocked(
     alloc: Allocator,
     sel: terminal.Selection,
 ) !Text {
-    return self.dumpTerminalTextLocked(
-        alloc,
-        &self.io.terminal,
-        sel,
-    );
-}
-
-/// Read text from a specific terminal while the renderer-state mutex is held.
-/// Snapshot consumers use this with the presentation terminal so their ranges
-/// cannot silently resolve against changing live scrollback.
-pub fn dumpTerminalTextLocked(
-    self: *Surface,
-    alloc: Allocator,
-    source_terminal: *terminal.Terminal,
-    sel: terminal.Selection,
-) !Text {
-    const source_screen = source_terminal.screens.active;
+    const source_screen = self.io.terminal.screens.active;
 
     // Read out the text
     const text = try source_screen.selectionString(alloc, .{
