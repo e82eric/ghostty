@@ -183,6 +183,7 @@ search: ?Search = null,
 /// their own matching and interaction logic.
 presentation_snapshot: ?*terminal.Terminal = null,
 presentation_snapshot_generation: u64 = 0,
+presentation_snapshot_text: ?terminal.SnapshotTextIndex = null,
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
@@ -314,6 +315,8 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     }
     self.renderer_state.terminal.flags.dirty.clear = true;
     self.presentation_snapshot = null;
+    var snapshot_text = self.presentation_snapshot_text;
+    self.presentation_snapshot_text = null;
     self.renderer_state.mutex.unlock(global.io());
 
     // Clear decorations before asking for the first live frame. The renderer
@@ -327,6 +330,7 @@ pub fn endPresentationSnapshot(self: *Surface) void {
         },
     }, .{ .forever = {} });
 
+    if (snapshot_text) |*value| value.deinit(global.alloc());
     snapshot_terminal.deinit(self.alloc);
     self.alloc.destroy(snapshot_terminal);
     self.queueRender() catch |err| {
@@ -3735,6 +3739,21 @@ pub fn scrollCallback(
     };
 
     // log.info("SCROLL: delta_y={} delta_x={}", .{ y.delta, x.delta });
+
+    // Modal presentation scrolls the frozen screen. The live PTY continues to
+    // advance independently and must not receive snapshot navigation input.
+    if (self.presentation_snapshot != null) {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        if (self.renderer_state.presentation_terminal) |snapshot| {
+            if (y.delta != 0) {
+                snapshot.screens.active.scroll(.{ .delta_row = y.delta * -1 });
+                snapshot.flags.dirty.clear = true;
+            }
+        }
+        self.renderer_state.mutex.unlock(global.io());
+        try self.queueRender();
+        return;
+    }
 
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
