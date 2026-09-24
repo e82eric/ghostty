@@ -458,6 +458,12 @@ typedef struct {
   uintptr_t text_len;
 } ghostty_text_s;
 
+/** A half-open UTF-8 byte range within frozen snapshot text. */
+typedef struct {
+  uint64_t start_byte;
+  uint64_t end_byte;
+} ghostty_snapshot_text_range_s;
+
 typedef enum {
   GHOSTTY_POINT_ACTIVE,
   GHOSTTY_POINT_VIEWPORT,
@@ -1276,9 +1282,6 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_text_s*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
 
-/** Return whether the surface is presenting a frozen terminal snapshot. */
-GHOSTTY_API bool ghostty_surface_snapshot_active(ghostty_surface_t);
-
 /** Capture scrollback and begin frozen snapshot presentation. */
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
@@ -1287,40 +1290,47 @@ GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
 GHOSTTY_API bool ghostty_surface_snapshot_end(ghostty_surface_t,
                                                  uint64_t generation);
 
-/** Return the frozen snapshot grid dimensions. Returns false when inactive. */
-GHOSTTY_API bool ghostty_surface_snapshot_size(ghostty_surface_t,
-                                                  uint64_t generation,
-                                                  uint32_t* columns,
-                                                  uint32_t* screen_rows,
-                                                  uint64_t* total_rows);
-
 /**
- * Read text from a stable range in the frozen snapshot. Points may use
- * GHOSTTY_POINT_SCREEN to address the complete scrollback plus active area.
- * The result must be released with ghostty_surface_free_text().
+ * Read the complete frozen snapshot as UTF-8. Soft-wrapped rows are joined;
+ * hard line breaks remain in the result. Byte offsets into this text may be
+ * passed to ghostty_surface_snapshot_set_ordered_text_highlights(). The result
+ * must be released with ghostty_surface_free_text().
  */
-GHOSTTY_API bool ghostty_surface_snapshot_read_text(ghostty_surface_t,
-                                                       uint64_t generation,
-                                                       ghostty_selection_s,
-                                                       ghostty_text_s*);
-
-/**
- * Atomically replace snapshot highlight ranges. selected may be NULL. The
- * ranges are copied and remain stable until replaced or snapshot mode ends.
- * A selected range is also scrolled into view as part of the same update.
- */
-GHOSTTY_API bool ghostty_surface_snapshot_set_highlights(
+GHOSTTY_API bool ghostty_surface_snapshot_read_all_text(
     ghostty_surface_t,
     uint64_t generation,
-    const ghostty_selection_s* ranges,
+    ghostty_text_s*);
+
+/**
+ * Atomically replace snapshot highlights using half-open UTF-8 byte ranges
+ * returned by ghostty_surface_snapshot_read_all_text(). selected may be NULL.
+ * Ranges must be nonoverlapping and ordered from newest to oldest (descending
+ * byte offsets).
+ * Only ranges overlapping the current viewport are prepared for rendering.
+ * reveal_selected scrolls to the selected match; pass false when refreshing
+ * highlights after the user scrolls the viewport.
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_set_ordered_text_highlights(
+    ghostty_surface_t,
+    uint64_t generation,
+    const ghostty_snapshot_text_range_s* ranges,
     uintptr_t range_count,
-    const ghostty_selection_s* selected);
+    const ghostty_snapshot_text_range_s* selected,
+    bool reveal_selected);
 
-/** Scroll the frozen snapshot viewport until range is visible. */
-GHOSTTY_API bool ghostty_surface_snapshot_scroll_to(
+/**
+ * Update only the selected text highlight. Returns false when navigation
+ * changes the viewport, in which case the caller must republish the matches.
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_select_text_highlight(
     ghostty_surface_t,
     uint64_t generation,
-    ghostty_selection_s range);
+    ghostty_snapshot_text_range_s selected);
+
+/** Whether the visible highlight set needs rebuilding after viewport movement. */
+GHOSTTY_API bool ghostty_surface_snapshot_text_highlights_need_refresh(
+    ghostty_surface_t,
+    uint64_t generation);
 
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);

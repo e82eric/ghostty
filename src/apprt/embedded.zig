@@ -480,6 +480,7 @@ pub const Surface = struct {
     size: apprt.SurfaceSize,
     cursor_pos: apprt.CursorPos,
     inspector: ?*Inspector = null,
+    snapshot_highlight_viewport: ?terminal.SnapshotTextIndex.ByteRange = null,
 
     /// The current title of the surface. The embedded apprt saves this so
     /// that getTitle works without the implementer needing to save it.
@@ -1655,6 +1656,12 @@ pub const CAPI = struct {
         }
     };
 
+    // ghostty_snapshot_text_range_s
+    const SnapshotTextRange = extern struct {
+        start_byte: u64,
+        end_byte: u64,
+    };
+
     // ghostty_point_s
     const Point = extern struct {
         tag: Tag,
@@ -1773,6 +1780,139 @@ pub const CAPI = struct {
         try std.testing.expectEqual(
             last_y,
             screen.pages.pointFromPin(.screen, pin).?.screen.y,
+        );
+    }
+
+    test "snapshot text byte ranges map multibyte text to terminal cells" {
+        const alloc = std.testing.allocator;
+        var t: terminal.Terminal = try .init(std.testing.io, alloc, .{
+            .cols = 16,
+            .rows = 2,
+            .max_scrollback_bytes = 0,
+        });
+        defer t.deinit(alloc);
+
+        var stream = t.vtStream();
+        defer stream.deinit();
+        stream.nextSlice("a界e\u{301}z");
+
+        const screen = t.screens.active;
+        var exported = try terminal.SnapshotTextIndex.build(screen, alloc);
+        defer exported.index.deinit(alloc);
+        defer alloc.free(exported.text);
+
+        const wide_start = std.mem.indexOf(u8, exported.text, "界").?;
+        const wide = snapshotTextSelection(&exported.index, .{
+            .start_byte = wide_start,
+            .end_byte = wide_start + "界".len,
+        }).?;
+        try std.testing.expectEqual(
+            terminal.Point{ .screen = .{ .x = 1, .y = 0 } },
+            screen.pages.pointFromPin(.screen, wide.start()).?,
+        );
+        try std.testing.expectEqual(
+            terminal.Point{ .screen = .{ .x = 1, .y = 0 } },
+            screen.pages.pointFromPin(.screen, wide.end()).?,
+        );
+
+        const combined_start = std.mem.indexOf(u8, exported.text, "e\u{301}").?;
+        const combined = snapshotTextSelection(&exported.index, .{
+            .start_byte = combined_start,
+            .end_byte = combined_start + "e\u{301}".len,
+        }).?;
+        try std.testing.expectEqual(
+            terminal.Point{ .screen = .{ .x = 3, .y = 0 } },
+            screen.pages.pointFromPin(.screen, combined.start()).?,
+        );
+        try std.testing.expectEqual(
+            terminal.Point{ .screen = .{ .x = 3, .y = 0 } },
+            screen.pages.pointFromPin(.screen, combined.end()).?,
+        );
+    }
+
+    test "snapshot text index preserves formatter pins across pages" {
+        const alloc = std.testing.allocator;
+        var t: terminal.Terminal = try .init(std.testing.io, alloc, .{
+            .cols = 16,
+            .rows = 3,
+            .max_scrollback_bytes = null,
+        });
+        defer t.deinit(alloc);
+
+        var stream = t.vtStream();
+        defer stream.deinit();
+        for (0..300) |i| {
+            stream.nextSlice("a界e\u{301}b\r\n");
+            if (i % 11 == 0) stream.nextSlice("abcdefghijklmnopqr\r\n");
+            if (i % 17 == 0) stream.nextSlice("\r\n");
+        }
+
+        const screen = t.screens.active;
+        try std.testing.expect(screen.pages.pages.first != screen.pages.pages.last);
+        var exported = try terminal.SnapshotTextIndex.build(screen, alloc);
+        defer exported.index.deinit(alloc);
+        defer alloc.free(exported.text);
+        try std.testing.expect(exported.index.pages.len > 1);
+
+        const full_map = try screen.selectionStringMap(alloc, .{
+            .sel = .init(
+                screen.pages.getTopLeft(.screen),
+                screen.pages.getBottomRight(.screen).?,
+                false,
+            ),
+            .trim = false,
+        });
+        defer full_map.deinit(alloc);
+        try std.testing.expectEqualStrings(full_map.string, exported.text);
+
+        for (0..exported.text.len) |offset| {
+            try std.testing.expect(
+                exported.index.pinAt(offset).?.eql(full_map.map.get(offset).?),
+            );
+        }
+
+        // The exported byte interval must contain precisely the bytes whose
+        // cells are on the visible rows, including after scrolling in history.
+        for ([_]usize{ 0, 40, 180 }) |row| {
+            screen.scroll(.{ .row = row });
+            const viewport = exported.index.viewportBytes(screen).?;
+            const top = screen.pages.pointFromPin(
+                .screen,
+                screen.pages.getTopLeft(.viewport),
+            ).?.screen.y;
+            const bottom = screen.pages.pointFromPin(
+                .screen,
+                screen.pages.getBottomRight(.viewport).?,
+            ).?.screen.y;
+            for (0..exported.text.len) |offset| {
+                const pin = exported.index.pinAt(offset).?;
+                const y = screen.pages.pointFromPin(.screen, pin).?.screen.y;
+                try std.testing.expectEqual(
+                    y >= top and y <= bottom,
+                    offset >= viewport.start and offset < viewport.end,
+                );
+            }
+        }
+    }
+
+    test "ordered snapshot highlights include only viewport overlaps" {
+        const ranges = [_]SnapshotTextRange{
+            .{ .start_byte = 30, .end_byte = 35 },
+            .{ .start_byte = 20, .end_byte = 25 },
+            .{ .start_byte = 10, .end_byte = 18 },
+            .{ .start_byte = 0, .end_byte = 5 },
+        };
+        const visible = snapshotVisibleOrderedTextRanges(&ranges, .{
+            .start = 15,
+            .end = 31,
+        });
+        try std.testing.expectEqualSlices(SnapshotTextRange, ranges[0..3], visible);
+        try std.testing.expectEqual(
+            @as(usize, 0),
+            snapshotVisibleOrderedTextRanges(&ranges, .{
+                .start = 5,
+                .end = 10,
+            }).len,
         );
     }
 
@@ -2064,13 +2204,6 @@ pub const CAPI = struct {
         ptr.deinit();
     }
 
-    export fn ghostty_surface_snapshot_active(surface: *Surface) bool {
-        const state = &surface.core_surface.renderer_state;
-        state.mutex.lockUncancelable(global.io());
-        defer state.mutex.unlock(global.io());
-        return state.presentation_terminal != null;
-    }
-
     export fn ghostty_surface_snapshot_begin(
         surface: *Surface,
         generation: *u64,
@@ -2079,6 +2212,7 @@ pub const CAPI = struct {
             log.warn("error beginning snapshot presentation err={}", .{err});
             return false;
         };
+        surface.snapshot_highlight_viewport = null;
         generation.* = surface.core_surface.presentation_snapshot_generation;
         return true;
     }
@@ -2092,36 +2226,14 @@ pub const CAPI = struct {
         {
             return false;
         }
+        surface.snapshot_highlight_viewport = null;
         surface.core_surface.endPresentationSnapshot();
         return true;
     }
 
-    export fn ghostty_surface_snapshot_size(
+    export fn ghostty_surface_snapshot_read_all_text(
         surface: *Surface,
         generation: u64,
-        columns: *u32,
-        screen_rows: *u32,
-        total_rows: *u64,
-    ) bool {
-        const state = &surface.core_surface.renderer_state;
-        state.mutex.lockUncancelable(global.io());
-        defer state.mutex.unlock(global.io());
-        if (surface.core_surface.presentation_snapshot_generation != generation)
-            return false;
-        const t = state.presentation_terminal orelse return false;
-        columns.* = t.cols;
-        screen_rows.* = t.rows;
-        const screen = t.screens.active;
-        const br = screen.pages.getBottomRight(.screen) orelse return false;
-        const br_point = screen.pages.pointFromPin(.screen, br) orelse return false;
-        total_rows.* = @as(u64, br_point.screen.y) + 1;
-        return true;
-    }
-
-    export fn ghostty_surface_snapshot_read_text(
-        surface: *Surface,
-        generation: u64,
-        sel: Selection,
         result: *Text,
     ) bool {
         const core_surface = &surface.core_surface;
@@ -2130,60 +2242,203 @@ pub const CAPI = struct {
 
         if (core_surface.presentation_snapshot_generation != generation)
             return false;
-
         const t = core_surface.renderer_state.presentation_terminal orelse
             return false;
-        const core_sel = sel.core(t.screens.active) orelse return false;
-        const text = core_surface.dumpTerminalTextLocked(
+        const exported = terminal.SnapshotTextIndex.build(
+            t.screens.active,
             global.alloc(),
-            t,
-            core_sel,
         ) catch |err| {
-            log.warn("error reading snapshot text err={}", .{err});
+            log.warn("error exporting snapshot text err={}", .{err});
             return false;
         };
-
-        const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
+        if (core_surface.presentation_snapshot_text) |*old| old.deinit(global.alloc());
+        core_surface.presentation_snapshot_text = exported.index;
+        result.* = .{
             .tl_px_x = -1,
             .tl_px_y = -1,
             .offset_start = 0,
             .offset_len = 0,
-        };
-        result.* = .{
-            .tl_px_x = vp.tl_px_x,
-            .tl_px_y = vp.tl_px_y,
-            .offset_start = vp.offset_start,
-            .offset_len = vp.offset_len,
-            .text = text.text.ptr,
-            .text_len = text.text.len,
+            .text = exported.text.ptr,
+            .text_len = exported.text.len,
         };
         return true;
     }
 
-    export fn ghostty_surface_snapshot_set_highlights(
+    fn snapshotTextSelection(
+        index: *terminal.SnapshotTextIndex,
+        range: SnapshotTextRange,
+    ) ?terminal.Selection {
+        const start = std.math.cast(usize, range.start_byte) orelse return null;
+        const end = std.math.cast(usize, range.end_byte) orelse return null;
+        if (start >= end or end > index.text_len) return null;
+        return .init(
+            index.pinAt(start) orelse return null,
+            index.pinAt(end - 1) orelse return null,
+            false,
+        );
+    }
+
+    export fn ghostty_surface_snapshot_set_ordered_text_highlights(
         surface: *Surface,
         generation: u64,
-        ranges: ?[*]const Selection,
+        ranges: ?[*]const SnapshotTextRange,
         range_count: usize,
-        selected: ?*const Selection,
+        selected: ?*const SnapshotTextRange,
+        reveal_selected: bool,
     ) bool {
-        snapshotSetHighlights(
+        snapshotSetTextHighlights(
             surface,
             generation,
             if (ranges) |ptr| ptr[0..range_count] else if (range_count == 0) &.{} else return false,
             selected,
+            reveal_selected,
         ) catch |err| {
-            log.warn("error setting snapshot highlights err={}", .{err});
+            log.warn("error setting ordered snapshot text highlights err={}", .{err});
             return false;
         };
         return true;
     }
 
-    fn snapshotSetHighlights(
+    fn snapshotSetTextHighlights(
         surface: *Surface,
         generation: u64,
-        ranges: []const Selection,
-        selected: ?*const Selection,
+        ranges: []const SnapshotTextRange,
+        selected: ?*const SnapshotTextRange,
+        reveal_selected: bool,
+    ) !void {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation)
+            return error.StaleSnapshot;
+        const t = state.presentation_terminal orelse return error.NoSnapshot;
+        const index = if (surface.core_surface.presentation_snapshot_text) |*value|
+            value
+        else
+            return error.NoSnapshotText;
+
+        const screen = t.screens.active;
+        const core_selected = if (selected) |range|
+            snapshotTextSelection(index, range.*) orelse return error.InvalidRange
+        else
+            null;
+        if (core_selected) |sel| {
+            if (reveal_selected) {
+                try snapshotScrollSelectedIntoView(screen, sel);
+                t.flags.dirty.clear = true;
+            }
+        }
+
+        // Ordered search results arrive newest first. Locate only matches
+        // that can touch the viewport before converting offsets to pins.
+        const viewport = index.viewportBytes(screen) orelse return error.InvalidRange;
+        const visible_ranges = snapshotVisibleOrderedTextRanges(ranges, viewport);
+
+        const alloc = global.alloc();
+        const core_ranges = try alloc.alloc(terminal.Selection, visible_ranges.len);
+        defer alloc.free(core_ranges);
+        for (visible_ranges, core_ranges) |range, *dst| {
+            dst.* = snapshotTextSelection(index, range) orelse
+                return error.InvalidRange;
+        }
+        try snapshotSetCoreHighlightsLocked(surface, t, core_ranges, core_selected);
+        surface.snapshot_highlight_viewport = viewport;
+    }
+
+    fn snapshotVisibleOrderedTextRanges(
+        ranges: []const SnapshotTextRange,
+        viewport: terminal.SnapshotTextIndex.ByteRange,
+    ) []const SnapshotTextRange {
+        var first: usize = 0;
+        var last: usize = ranges.len;
+        while (first < last) {
+            const mid = first + (last - first) / 2;
+            if (ranges[mid].start_byte >= viewport.end) {
+                first = mid + 1;
+            } else {
+                last = mid;
+            }
+        }
+        const visible_start = first;
+        last = ranges.len;
+        while (first < last) {
+            const mid = first + (last - first) / 2;
+            if (ranges[mid].end_byte > viewport.start) {
+                first = mid + 1;
+            } else {
+                last = mid;
+            }
+        }
+        return ranges[visible_start..first];
+    }
+
+    /// Update only the selected decoration when navigation stays on the same
+    /// viewport. If scrolling changes the viewport, the caller must publish
+    /// the visible match set again.
+    export fn ghostty_surface_snapshot_select_text_highlight(
+        surface: *Surface,
+        generation: u64,
+        selected: SnapshotTextRange,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation)
+            return false;
+        const t = state.presentation_terminal orelse return false;
+        const index = if (surface.core_surface.presentation_snapshot_text) |*value|
+            value
+        else
+            return false;
+        const screen = t.screens.active;
+        const sel = snapshotTextSelection(index, selected) orelse return false;
+        snapshotScrollSelectedIntoView(screen, sel) catch return false;
+        const viewport = index.viewportBytes(screen) orelse return false;
+        const published = surface.snapshot_highlight_viewport orelse return false;
+        if (!std.meta.eql(viewport, published)) return false;
+
+        var arena = std.heap.ArenaAllocator.init(global.alloc());
+        const match = terminal.highlight.Flattened.init(
+            arena.allocator(),
+            sel.topLeft(screen),
+            sel.bottomRight(screen),
+        ) catch {
+            arena.deinit();
+            return false;
+        };
+        _ = surface.core_surface.renderer_thread.mailbox.push(
+            global.io(),
+            .{ .search_selected_match = .{ .arena = arena, .match = match } },
+            .{ .forever = {} },
+        );
+        surface.core_surface.renderer_thread.wakeup.notify() catch {};
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_text_highlights_need_refresh(
+        surface: *Surface,
+        generation: u64,
+    ) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation)
+            return false;
+        const t = state.presentation_terminal orelse return false;
+        const index = if (surface.core_surface.presentation_snapshot_text) |*value|
+            value
+        else
+            return false;
+        const viewport = index.viewportBytes(t.screens.active) orelse return false;
+        const published = surface.snapshot_highlight_viewport orelse return true;
+        return !std.meta.eql(viewport, published);
+    }
+
+    fn snapshotSetCoreHighlightsLocked(
+        surface: *Surface,
+        t: *terminal.Terminal,
+        ranges: []const terminal.Selection,
+        selected: ?terminal.Selection,
     ) !void {
         var matches_arena = std.heap.ArenaAllocator.init(global.alloc());
         errdefer matches_arena.deinit();
@@ -2196,16 +2451,8 @@ pub const CAPI = struct {
         var selected_message: ?renderer.Message.SearchMatch = null;
         errdefer if (selected_message) |*value| value.arena.deinit();
 
-        const state = &surface.core_surface.renderer_state;
-        state.mutex.lockUncancelable(global.io());
-        defer state.mutex.unlock(global.io());
-        if (surface.core_surface.presentation_snapshot_generation != generation)
-            return error.StaleSnapshot;
-        const t = state.presentation_terminal orelse return error.NoSnapshot;
         const screen = t.screens.active;
-
-        for (ranges, matches) |range, *dst| {
-            const sel = range.core(screen) orelse return error.InvalidRange;
+        for (ranges, matches) |sel, *dst| {
             dst.* = try .init(
                 matches_alloc,
                 sel.topLeft(screen),
@@ -2213,14 +2460,7 @@ pub const CAPI = struct {
             );
         }
 
-        if (selected) |range| {
-            const sel = range.core(screen) orelse return error.InvalidRange;
-            const selected_point = screen.pages.pointFromPin(
-                .screen,
-                sel.topLeft(screen),
-            ) orelse return error.InvalidRange;
-            screen.scroll(.{ .row = selected_point.screen.y });
-            t.flags.dirty.clear = true;
+        if (selected) |sel| {
             var arena = std.heap.ArenaAllocator.init(global.alloc());
             errdefer arena.deinit();
             selected_message = .{
@@ -2247,23 +2487,24 @@ pub const CAPI = struct {
         surface.core_surface.renderer_thread.wakeup.notify() catch {};
     }
 
-    export fn ghostty_surface_snapshot_scroll_to(
-        surface: *Surface,
-        generation: u64,
-        range: Selection,
-    ) bool {
-        const core_surface = &surface.core_surface;
-        core_surface.renderer_state.mutex.lockUncancelable(global.io());
-        defer core_surface.renderer_state.mutex.unlock(global.io());
-        if (core_surface.presentation_snapshot_generation != generation)
-            return false;
-        const t = core_surface.renderer_state.presentation_terminal orelse
-            return false;
-        const screen = t.screens.active;
-        const sel = range.core(screen) orelse return false;
-        screen.scroll(.{ .pin = sel.topLeft(screen) });
-        core_surface.renderer_thread.wakeup.notify() catch {};
-        return true;
+    fn snapshotScrollSelectedIntoView(
+        screen: *terminal.Screen,
+        sel: terminal.Selection,
+    ) !void {
+        const pages = &screen.pages;
+        const selected = pages.pointFromPin(.screen, sel.topLeft(screen)) orelse
+            return error.InvalidRange;
+        const top = pages.pointFromPin(.screen, pages.getTopLeft(.viewport)) orelse
+            return error.InvalidRange;
+        const bottom_pin = pages.getBottomRight(.viewport) orelse
+            return error.InvalidRange;
+        const bottom = pages.pointFromPin(.screen, bottom_pin) orelse
+            return error.InvalidRange;
+        if (selected.screen.y < top.screen.y or
+            selected.screen.y > bottom.screen.y)
+        {
+            screen.scroll(.{ .row = selected.screen.y });
+        }
     }
 
     /// Tell the surface that it needs to schedule a render
