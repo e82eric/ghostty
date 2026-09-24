@@ -26,10 +26,6 @@ terminal: *terminalpkg.Terminal,
 /// Access is protected by `mutex`, just like `terminal`.
 presentation_terminal: ?*terminalpkg.Terminal = null,
 
-/// A presentation-only cursor in the frozen terminal's page list. Unlike the
-/// terminal insertion cursor, this can point into scrollback history.
-copy_cursor_pin: ?terminalpkg.PageList.Pin = null,
-
 /// The terminal inspector, if any. This will be null while the inspector
 /// is not active and will be set when it is active.
 inspector: ?*Inspector = null,

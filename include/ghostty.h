@@ -1311,40 +1311,46 @@ GHOSTTY_API int ghostty_surface_snapshot_text_cursor_next(
 
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
 typedef struct {
-    ghostty_snapshot_cell_s cell;
-    uint32_t columns;
-    uint64_t rows;
-} ghostty_snapshot_copy_state_s;
-/** The initial insertion-cursor cell and frozen screen dimensions. */
-GHOSTTY_API bool ghostty_surface_snapshot_copy_cursor_origin(
-    ghostty_surface_t, uint64_t generation, ghostty_snapshot_copy_state_s*);
-typedef struct {
+    ghostty_snapshot_cell_s cursor;
     uint64_t viewport_top;
     uint64_t total_rows;
     uint32_t viewport_rows;
     uint32_t columns;
-} ghostty_snapshot_copy_view_s;
-/** Current frozen viewport in the same row coordinates as snapshot cells. */
-GHOSTTY_API bool ghostty_surface_snapshot_copy_view(
-    ghostty_surface_t, uint64_t generation, ghostty_snapshot_copy_view_s*);
-/** Set a steady block cursor over the frozen scrollback and reveal its cell.
- * snap_right skips a wide character's trailing cell when moving right.
+} ghostty_snapshot_view_s;
+/** Frozen insertion-cursor cell, viewport, and screen dimensions. The cursor
+ * remains the snapshot's initial insertion point as the viewport scrolls.
+ * All row positions use coordinates across the complete frozen page list.
  */
-GHOSTTY_API bool ghostty_surface_snapshot_copy_cursor_set(
+GHOSTTY_API bool ghostty_surface_snapshot_view(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_view_s*);
+/** Resolve a snapshot cell to its character head (or next cell when moving right). */
+GHOSTTY_API bool ghostty_surface_snapshot_resolve_cell(
     ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_s requested,
     bool snap_right, ghostty_snapshot_cell_s* resolved);
 typedef struct {
     ghostty_snapshot_cell_s start;
     ghostty_snapshot_cell_s end; /* inclusive */
 } ghostty_snapshot_cell_range_s;
-/** Ranges are nonoverlapping, newest first, in frozen screen coordinates. */
-GHOSTTY_API bool ghostty_surface_snapshot_set_ordered_cell_highlights(
+/** RGB values are 0xRRGGBB. Flags bit 0 enables foreground; bit 1 enables background. */
+typedef struct {
+    uint32_t foreground_rgb;
+    uint32_t background_rgb;
+    uint32_t flags;
+} ghostty_snapshot_decoration_style_s;
+typedef struct {
+    const ghostty_snapshot_cell_range_s* ranges;
+    uintptr_t range_count;
+    ghostty_snapshot_decoration_style_s style;
+} ghostty_snapshot_decoration_layer_s;
+/** Replace all snapshot decorations. Earlier layers take priority. Ranges in each
+ * layer are nonoverlapping and ordered newest first in frozen screen coordinates.
+ * reveal may be NULL; otherwise its cell is scrolled into view.
+ */
+GHOSTTY_API bool ghostty_surface_snapshot_apply_decorations(
     ghostty_surface_t, uint64_t generation,
-    const ghostty_snapshot_cell_range_s*, uintptr_t count,
-    const ghostty_snapshot_cell_range_s* selected, bool reveal_selected);
-GHOSTTY_API bool ghostty_surface_snapshot_select_cell_highlight(
-    ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_range_s selected);
-GHOSTTY_API bool ghostty_surface_snapshot_cell_highlights_need_refresh(
+    const ghostty_snapshot_decoration_layer_s*, uintptr_t layer_count,
+    const ghostty_snapshot_cell_s* reveal);
+GHOSTTY_API bool ghostty_surface_snapshot_decorations_need_refresh(
     ghostty_surface_t, uint64_t generation);
 
 #ifdef __APPLE__
