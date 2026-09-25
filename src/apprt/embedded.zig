@@ -1634,6 +1634,7 @@ pub const CAPI = struct {
 
     const SnapshotCell = extern struct { x: u32, y: u64 };
     const SnapshotCellRange = extern struct { start: SnapshotCell, end: SnapshotCell };
+    const SnapshotSelectionText = extern struct { text: ?[*]const u8, len: usize };
     const SnapshotView = extern struct {
         cursor: SnapshotCell,
         viewport_top: u64,
@@ -1752,6 +1753,31 @@ pub const CAPI = struct {
         }
         result.* = .{ .x = pin.x, .y = requested.y };
         return true;
+    }
+
+    export fn ghostty_surface_snapshot_selection_text(
+        surface: *Surface,
+        generation: u64,
+        range: SnapshotCellRange,
+        result: *SnapshotSelectionText,
+    ) bool {
+        result.* = .{ .text = null, .len = 0 };
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        const sel = snapshotCellSelection(screen, range, snapshotViewportAnchor(screen)) orelse return false;
+        const text_result = screen.selectionString(global.alloc(), .{ .sel = sel }) catch return false;
+        result.* = .{ .text = text_result.ptr, .len = text_result.len };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_selection_text_free(result: *SnapshotSelectionText) void {
+        if (result.text) |ptr| global.alloc().free(ptr[0 .. result.len + 1]);
+        result.* = .{ .text = null, .len = 0 };
     }
 
     export fn ghostty_surface_snapshot_apply_decorations(

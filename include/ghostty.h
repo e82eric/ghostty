@@ -1340,6 +1340,17 @@ typedef struct {
     ghostty_snapshot_cell_s start;
     ghostty_snapshot_cell_s end; /* inclusive */
 } ghostty_snapshot_cell_range_s;
+typedef struct {
+    const char* text;
+    uintptr_t len;
+} ghostty_snapshot_selection_text_s;
+/** Extract an inclusive cell range from the frozen snapshot. Free the result
+ * with ghostty_surface_snapshot_selection_text_free. */
+GHOSTTY_API bool ghostty_surface_snapshot_selection_text(
+    ghostty_surface_t, uint64_t generation,
+    ghostty_snapshot_cell_range_s range, ghostty_snapshot_selection_text_s* result);
+GHOSTTY_API void ghostty_surface_snapshot_selection_text_free(
+    ghostty_snapshot_selection_text_s* result);
 /** RGB values are 0xRRGGBB. Flags bit 0 enables foreground; bit 1 enables background. */
 typedef struct {
     uint32_t foreground_rgb;
