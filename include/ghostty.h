@@ -1300,6 +1300,21 @@ GHOSTTY_API bool ghostty_surface_snapshot_text_cursor_reset(ghostty_snapshot_tex
 GHOSTTY_API int ghostty_surface_snapshot_text_cursor_next(
     ghostty_snapshot_text_cursor_t, ghostty_snapshot_text_chunk_s*);
 
+/** One physical row of the frozen snapshot. Each UTF-8 byte has a matching
+ * cell column; both buffers are owned by the caller until text_row_free.
+ * A blank row may have zero bytes. Rows use screen coordinates.
+ */
+typedef struct {
+    const char* text;
+    const uint32_t* columns;
+    uintptr_t len;
+    bool wraps_to_next;
+} ghostty_snapshot_text_row_s;
+GHOSTTY_API bool ghostty_surface_snapshot_text_row(
+    ghostty_surface_t, uint64_t generation, uint64_t row,
+    ghostty_snapshot_text_row_s*);
+GHOSTTY_API void ghostty_surface_snapshot_text_row_free(ghostty_snapshot_text_row_s*);
+
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
 typedef struct {
     ghostty_snapshot_cell_s cursor;

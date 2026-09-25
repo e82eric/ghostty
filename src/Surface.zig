@@ -184,6 +184,8 @@ search: ?Search = null,
 presentation_snapshot: ?*terminal.Terminal = null,
 presentation_snapshot_generation: u64 = 0,
 snapshot_decoration_viewport: ?SnapshotViewport = null,
+/// Last physical row read from the frozen snapshot, for nearby text queries.
+snapshot_text_row_anchor: ?struct { pin: terminal.PageList.Pin, row: u64 } = null,
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
@@ -296,6 +298,7 @@ pub fn beginPresentationSnapshot(self: *Surface) !void {
     self.renderer_state.mutex.lockUncancelable(global.io());
     self.renderer_state.presentation_terminal = snapshot_terminal;
     self.presentation_snapshot = snapshot_terminal;
+    self.snapshot_text_row_anchor = null;
     self.presentation_snapshot_generation +%= 1;
     if (self.presentation_snapshot_generation == 0) {
         self.presentation_snapshot_generation = 1;
@@ -318,6 +321,7 @@ pub fn endPresentationSnapshot(self: *Surface) void {
     self.renderer_state.terminal.flags.dirty.clear = true;
     self.presentation_snapshot = null;
     self.snapshot_decoration_viewport = null;
+    self.snapshot_text_row_anchor = null;
     self.renderer_state.mutex.unlock(global.io());
 
     // Clear decorations before asking for the first live frame. The renderer
