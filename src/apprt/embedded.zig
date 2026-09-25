@@ -2623,12 +2623,15 @@ pub const CAPI = struct {
     /// Send a key event identified by its USB HID usage code. This avoids
     /// requiring cross-platform embedders to reproduce Ghostty's native
     /// keycode tables.
+    /// The optional translated text is part of the key event so applications
+    /// can use their active keyboard protocol instead of receiving a paste.
     export fn ghostty_surface_key_usb(
         surface: *Surface,
         action: input.Action,
         mods: c_int,
         usb: u32,
         unshifted_codepoint: u32,
+        text: ?[*:0]const u8,
     ) bool {
         const native = for (input.keycodes.entries) |entry| {
             if (entry.usb == usb) break entry.native;
@@ -2637,9 +2640,11 @@ pub const CAPI = struct {
         return ghostty_surface_key(surface, .{
             .action = action,
             .mods = mods,
-            .consumed_mods = 0,
+            // A printable shifted key has already used Shift to produce its
+            // text. Keep it out of the effective modifiers for key encoding.
+            .consumed_mods = if (text != null) mods & 1 else 0,
             .keycode = native,
-            .text = null,
+            .text = text,
             .unshifted_codepoint = unshifted_codepoint,
             .composing = false,
         });
