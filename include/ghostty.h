@@ -1228,11 +1228,14 @@ GHOSTTY_API ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_su
 GHOSTTY_API bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
 // Sends a key using a USB HID usage code instead of a platform-native
 // scancode. This is useful for cross-platform embedders such as winit.
+// The optional translated text belongs to the key event; use NULL for keys
+// without text. A zero USB code can carry text without a physical key.
 GHOSTTY_API bool ghostty_surface_key_usb(ghostty_surface_t,
                                            ghostty_input_action_e,
                                            ghostty_input_mods_e,
                                            uint32_t,
-                                           uint32_t);
+                                           uint32_t,
+                                           const char*);
 GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
                                                    ghostty_input_key_s,
                                                    ghostty_binding_flags_e*);
