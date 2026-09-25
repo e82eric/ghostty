@@ -1664,6 +1664,13 @@ pub const CAPI = struct {
         start_y: u16,
     };
 
+    const SnapshotTextRow = extern struct {
+        text: ?[*]const u8,
+        columns: ?[*]const u32,
+        len: usize,
+        wraps_to_next: bool,
+    };
+
     const SnapshotTextCursor = struct {
         surface: *Surface,
         generation: u64,
@@ -1957,6 +1964,64 @@ pub const CAPI = struct {
             .start_y = chunk.start_y,
         };
         return 1;
+    }
+
+    export fn ghostty_surface_snapshot_text_row(
+        surface: *Surface,
+        generation: u64,
+        row: u64,
+        result: *SnapshotTextRow,
+    ) bool {
+        result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        const anchor: ?SnapshotAnchor = if (surface.core_surface.snapshot_text_row_anchor) |a|
+            .{ .pin = a.pin, .row = a.row }
+        else
+            snapshotViewportAnchor(screen);
+        const pin = snapshotCellPin(screen, .{ .x = 0, .y = row }, anchor) orelse return false;
+        surface.core_surface.snapshot_text_row_anchor = .{ .pin = pin, .row = row };
+        const alloc = global.alloc();
+        var text_writer: std.Io.Writer.Allocating = .init(alloc);
+        defer text_writer.deinit();
+        var points: std.ArrayList(terminal.Coordinate) = .empty;
+        defer points.deinit(alloc);
+        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(pin.node.page(), .{
+            .emit = .plain,
+            .unwrap = false,
+            .trim = false,
+        });
+        formatter.start_y = pin.y;
+        formatter.end_y = pin.y;
+        formatter.point_map = .{ .alloc = alloc, .map = &points };
+        formatter.format(&text_writer.writer) catch return false;
+        const written = text_writer.written();
+        if (written.len != points.items.len) return false;
+        const text_copy = alloc.dupe(u8, written) catch return false;
+        const columns = alloc.alloc(u32, written.len) catch {
+            alloc.free(text_copy);
+            return false;
+        };
+        for (points.items, columns) |point, *column| column.* = point.x;
+        result.* = .{
+            .text = text_copy.ptr,
+            .columns = columns.ptr,
+            .len = written.len,
+            .wraps_to_next = pin.rowAndCell().row.wrap,
+        };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_text_row_free(result: *SnapshotTextRow) void {
+        const alloc = global.alloc();
+        if (result.text) |ptr| alloc.free(ptr[0..result.len]);
+        if (result.columns) |ptr| alloc.free(ptr[0..result.len]);
+        result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
     }
 
     // ghostty_point_s
