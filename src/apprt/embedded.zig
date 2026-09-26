@@ -1691,11 +1691,24 @@ pub const CAPI = struct {
         foreground_rgb: u32,
         background_rgb: u32,
         flags: u32,
+
+        fn toCore(self: SnapshotDecorationStyle) renderer.Message.DecorationStyle {
+            return .{
+                .foreground = if (self.flags & 1 != 0) snapshotRgb(self.foreground_rgb) else null,
+                .background = if (self.flags & 2 != 0) snapshotRgb(self.background_rgb) else null,
+            };
+        }
     };
     const SnapshotDecorationLayer = extern struct {
         ranges: ?[*]const SnapshotCellRange,
         range_count: usize,
         style: SnapshotDecorationStyle,
+    };
+    const SnapshotCellText = extern struct {
+        cell: SnapshotCell,
+        codepoint: u32,
+        style: SnapshotDecorationStyle,
+        bold: bool,
     };
 
     const SnapshotAnchor = struct { pin: terminal.PageList.Pin, row: u64 };
@@ -1839,10 +1852,13 @@ pub const CAPI = struct {
         generation: u64,
         layers_ptr: ?[*]const SnapshotDecorationLayer,
         layer_count: usize,
+        text_ptr: ?[*]const SnapshotCellText,
+        text_count: usize,
         viewport_options: ?*const SnapshotViewportOptions,
     ) bool {
         if (layer_count > 254) return false;
         const layers = if (layers_ptr) |ptr| ptr[0..layer_count] else if (layer_count == 0) &.{} else return false;
+        const text = if (text_ptr) |ptr| ptr[0..text_count] else if (text_count == 0) &.{} else return false;
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
@@ -1892,15 +1908,33 @@ pub const CAPI = struct {
             }
             dst.* = .{
                 .ranges = flattened,
-                .style = .{
-                    .foreground = if (layer.style.flags & 1 != 0) snapshotRgb(layer.style.foreground_rgb) else null,
-                    .background = if (layer.style.flags & 2 != 0) snapshotRgb(layer.style.background_rgb) else null,
-                },
+                .style = layer.style.toCore(),
             };
+        }
+        var core_text: std.ArrayList(renderer.Message.DecorationText) = .empty;
+        for (text) |item| {
+            if (item.style.flags & ~@as(u32, 3) != 0) return false;
+            if (item.codepoint < 0x20 or item.codepoint > 0x7e) return false;
+            if (item.cell.y < viewport.start or item.cell.y >= viewport.end) continue;
+            _ = snapshotCellPin(screen, item.cell, anchor) orelse return false;
+            core_text.append(alloc, .{
+                .coord = .{ .x = @intCast(item.cell.x), .y = @intCast(item.cell.y - viewport.start) },
+                .codepoint = @intCast(item.codepoint),
+                .style = item.style.toCore(),
+                .bold = item.bold,
+            }) catch return false;
+        }
+        std.mem.sort(renderer.Message.DecorationText, core_text.items, {}, struct {
+            fn less(_: void, a: renderer.Message.DecorationText, b: renderer.Message.DecorationText) bool {
+                return a.coord.y < b.coord.y or (a.coord.y == b.coord.y and a.coord.x < b.coord.x);
+            }
+        }.less);
+        for (core_text.items, 0..) |item, i| {
+            if (i > 0 and std.meta.eql(item.coord, core_text.items[i - 1].coord)) return false;
         }
         _ = surface.core_surface.renderer_thread.mailbox.push(
             global.io(),
-            .{ .snapshot_decorations = .{ .arena = arena, .layers = core_layers } },
+            .{ .snapshot_decorations = .{ .arena = arena, .layers = core_layers, .text = core_text.items } },
             .{ .forever = {} },
         );
         owned = false;

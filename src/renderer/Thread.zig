@@ -431,11 +431,7 @@ fn drainMailbox(self: *Thread) !void {
             },
 
             .snapshot_decorations => |v| {
-                if (self.renderer.snapshot_decorations) |*old| old.arena.deinit();
-                self.renderer.snapshot_decorations = v;
-                // This existing flag rebuilds all per-row highlights, including
-                // the presentation decorations added above built-in search.
-                self.renderer.search_matches_dirty = true;
+                self.renderer.snapshot_overrides.replace(v);
             },
 
             .inspector => |v| {
