@@ -19,6 +19,7 @@ const constraintWidth = cellpkg.constraintWidth;
 const isCovering = cellpkg.isCovering;
 const rowNeverExtendBg = @import("row.zig").neverExtendBg;
 const Overlay = @import("Overlay.zig");
+const SnapshotOverrides = @import("SnapshotOverrides.zig");
 const imagepkg = @import("image.zig");
 const ImageState = imagepkg.State;
 const shadertoy = @import("shadertoy.zig");
@@ -160,7 +161,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// that do not exist anymore). These must be validated prior to use.
         search_matches: ?renderer.Message.SearchMatches,
         search_selected_match: ?renderer.Message.SearchMatch,
-        snapshot_decorations: ?renderer.Message.SnapshotDecorations,
+        snapshot_overrides: SnapshotOverrides,
         search_matches_dirty: bool,
 
         /// The current set of cells to render. This is rebuilt on every frame
@@ -726,7 +727,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .last_bottom_y = 0,
                 .search_matches = null,
                 .search_selected_match = null,
-                .snapshot_decorations = null,
+                .snapshot_overrides = .{},
                 .search_matches_dirty = false,
 
                 // Render state
@@ -820,7 +821,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
             if (self.search_matches) |*m| m.arena.deinit();
-            if (self.snapshot_decorations) |*m| m.arena.deinit();
+            self.snapshot_overrides.deinit();
 
             self.latest_frame.deinit(global.io());
 
@@ -1534,8 +1535,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 log.warn("error searching for regex links err={}", .{err});
             };
 
+            self.snapshot_overrides.invalidate(&self.terminal_state);
             // Clear our highlight state and update.
-            if (self.search_matches_dirty or self.terminal_state.dirty != .false) {
+            if (self.search_matches_dirty or self.snapshot_overrides.highlights_dirty or self.terminal_state.dirty != .false) {
                 self.search_matches_dirty = false;
 
                 // Clear the prior highlights
@@ -1558,17 +1560,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // NOTE: The order below matters. Highlights added earlier
                 // will take priority.
 
-                if (self.snapshot_decorations) |decorations| {
-                    for (decorations.layers, 0..) |layer, index| {
-                        self.terminal_state.updateHighlightsFlattened(
-                            self.alloc,
-                            @intCast(index + 2),
-                            layer.ranges,
-                        ) catch |err| {
-                            log.warn("error updating snapshot decoration err={}", .{err});
-                        };
-                    }
-                }
+                self.snapshot_overrides.updateHighlights(self.alloc, &self.terminal_state);
 
                 if (self.search_selected_match) |m| {
                     self.terminal_state.updateHighlightsFlattened(
@@ -3024,6 +3016,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 const wide = cell.wide;
+                const text_override = self.snapshot_overrides.textAt(@intCast(x), @intCast(y));
                 const style: terminal.Style = if (cell.hasStyling())
                     managed_style.*
                 else
@@ -3038,6 +3031,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     decoration: renderer.Message.DecorationStyle,
                 } = selected: {
                     // Order below matters for precedence.
+                    if (text_override) |text| break :selected .{ .decoration = text.style };
 
                     // Selection should take the highest precedence.
                     const x_compare = if (wide == .spacer_tail)
@@ -3057,11 +3051,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             x_compare <= hl.range[1])
                         {
                             if (hl.tag >= 2) {
-                                if (self.snapshot_decorations) |decorations| {
-                                    const index = hl.tag - 2;
-                                    if (index < decorations.layers.len)
-                                        break :selected .{ .decoration = decorations.layers[index].style };
-                                }
+                                if (self.snapshot_overrides.styleForTag(hl.tag)) |decoration|
+                                    break :selected .{ .decoration = decoration };
                             } else {
                                 const tag: HighlightTag = @enumFromInt(hl.tag);
                                 break :selected switch (tag) {
@@ -3228,7 +3219,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // emulators, e.g. Alacritty, still render text decorations
                 // and only make the text itself invisible. The decision
                 // has been made here to match xterm's behavior for this.
-                if (style.flags.invisible) {
+                if (style.flags.invisible and text_override == null) {
                     continue;
                 }
 
@@ -3251,7 +3242,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // We draw underlines first so that they layer underneath text.
                 // This improves readability when a colored underline is used
                 // which intersects parts of the text (descenders).
-                if (underline != .none) self.addUnderline(
+                if (underline != .none and text_override == null) self.addUnderline(
                     @intCast(x),
                     @intCast(y),
                     underline,
@@ -3264,7 +3255,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     );
                 };
 
-                if (style.flags.overline) self.addOverline(@intCast(x), @intCast(y), fg, alpha) catch |err| {
+                if (style.flags.overline and text_override == null) self.addOverline(@intCast(x), @intCast(y), fg, alpha) catch |err| {
                     log.warn(
                         "error adding overline to cell, will be invalid x={} y={}, err={}",
                         .{ x, y, err },
@@ -3327,7 +3318,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         run.offset + shaped_cells[shaper_cells_i].x == x) : ({
                         shaper_cells_i += 1;
                     }) {
-                        self.addGlyph(
+                        if (text_override == null) self.addGlyph(
                             @intCast(x),
                             @intCast(y),
                             state.cols,
@@ -3345,8 +3336,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     }
                 }
 
+                if (text_override) |text| try SnapshotOverrides.drawText(self, text, fg);
+
                 // Finally, draw a strikethrough if necessary.
-                if (style.flags.strikethrough) self.addStrikethrough(
+                if (style.flags.strikethrough and text_override == null) self.addStrikethrough(
                     @intCast(x),
                     @intCast(y),
                     fg,

@@ -1365,6 +1365,18 @@ typedef struct {
     uintptr_t range_count;
     ghostty_snapshot_decoration_style_s style;
 } ghostty_snapshot_decoration_layer_s;
+/** Render-only single-cell text override. codepoint is printable ASCII for
+ * this initial API; underlying snapshot text is never changed. Style flags
+ * use the same foreground/background semantics as range decorations. Colors
+ * not overridden by style use the original cell colors, excluding range
+ * decorations. bold applies only to this replacement glyph.
+ * Overrides must be nonoverlapping and are clipped to the viewport. */
+typedef struct {
+    ghostty_snapshot_cell_s cell;
+    uint32_t codepoint;
+    ghostty_snapshot_decoration_style_s style;
+    bool bold;
+} ghostty_snapshot_cell_text_s;
 typedef struct {
     const ghostty_snapshot_cell_s* reveal;
     uint32_t padding_rows;
@@ -1382,6 +1394,7 @@ typedef struct {
 GHOSTTY_API bool ghostty_surface_snapshot_apply_decorations(
     ghostty_surface_t, uint64_t generation,
     const ghostty_snapshot_decoration_layer_s*, uintptr_t layer_count,
+    const ghostty_snapshot_cell_text_s*, uintptr_t text_count,
     const ghostty_snapshot_viewport_options_s* viewport);
 GHOSTTY_API bool ghostty_surface_snapshot_decorations_need_refresh(
     ghostty_surface_t, uint64_t generation);

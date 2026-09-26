@@ -93,6 +93,14 @@ pub const Message = union(enum) {
     pub const SnapshotDecorations = struct {
         arena: ArenaAllocator,
         layers: []const DecorationLayer,
+        text: []const DecorationText = &.{},
+    };
+
+    pub const DecorationText = struct {
+        coord: terminal.Coordinate,
+        codepoint: u21,
+        style: DecorationStyle,
+        bold: bool = false,
     };
 
     /// Initialize a change_config message.
