@@ -1211,6 +1211,15 @@ GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_size(ghostty_surface_t, uint32_t, uint32_t);
 GHOSTTY_API ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
+// Owned copy of the primary regular or bold SFNT font. Free with the paired function.
+// Unsupported font formats/backends return false without allocating.
+typedef struct {
+  uint8_t* data;
+  size_t len;
+  uint32_t face_index;
+} ghostty_font_data_s;
+GHOSTTY_API bool ghostty_surface_read_font(ghostty_surface_t, bool bold, ghostty_font_data_s*);
+GHOSTTY_API void ghostty_font_data_free(ghostty_font_data_s*);
 GHOSTTY_API uint64_t ghostty_surface_foreground_pid(ghostty_surface_t);
 GHOSTTY_API ghostty_string_s ghostty_surface_tty_name(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_set_color_scheme(ghostty_surface_t,
