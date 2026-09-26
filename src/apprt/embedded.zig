@@ -1805,6 +1805,7 @@ pub const CAPI = struct {
         generation: u64,
         range: SnapshotCellRange,
         trim: bool,
+        rectangle: bool,
         result: *SnapshotSelectionText,
     ) bool {
         result.* = .{ .text = null, .len = 0 };
@@ -1815,7 +1816,8 @@ pub const CAPI = struct {
             surface.core_surface.presentation_snapshot == null) return false;
         const t = state.presentation_terminal orelse return false;
         const screen = t.screens.active;
-        const sel = snapshotCellSelection(screen, range, snapshotViewportAnchor(screen)) orelse return false;
+        var sel = snapshotCellSelection(screen, range, snapshotViewportAnchor(screen)) orelse return false;
+        sel.rectangle = rectangle;
         const text_result = screen.selectionString(global.alloc(), .{ .sel = sel, .trim = trim }) catch return false;
         result.* = .{ .text = text_result.ptr, .len = text_result.len };
         return true;
