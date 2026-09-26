@@ -1826,12 +1826,18 @@ pub const CAPI = struct {
         result.* = .{ .text = null, .len = 0 };
     }
 
+    const SnapshotViewportOptions = extern struct {
+        reveal: ?*const SnapshotCell,
+        padding_rows: u32,
+        top_row: ?*const u64,
+    };
+
     export fn ghostty_surface_snapshot_apply_decorations(
         surface: *Surface,
         generation: u64,
         layers_ptr: ?[*]const SnapshotDecorationLayer,
         layer_count: usize,
-        reveal: ?*const SnapshotCell,
+        viewport_options: ?*const SnapshotViewportOptions,
     ) bool {
         if (layer_count > 254) return false;
         const layers = if (layers_ptr) |ptr| ptr[0..layer_count] else if (layer_count == 0) &.{} else return false;
@@ -1842,17 +1848,21 @@ pub const CAPI = struct {
             surface.core_surface.presentation_snapshot == null) return false;
         const t = state.presentation_terminal orelse return false;
         const screen = t.screens.active;
-        if (reveal) |cell| {
-            if (cell.y >= screen.pages.total_rows or cell.x >= screen.pages.cols) return false;
-            _ = snapshotCellPin(screen, cell.*, snapshotViewportAnchor(screen)) orelse return false;
-            const before = snapshotViewportRows(screen) orelse return false;
-            if (cell.y < before.start) {
-                screen.scroll(.{ .row = std.math.cast(usize, cell.y) orelse return false });
-                t.flags.dirty.clear = true;
-            } else if (cell.y >= before.end) {
-                const height = before.end - before.start;
-                screen.scroll(.{ .row = std.math.cast(usize, cell.y - height + 1) orelse return false });
-                t.flags.dirty.clear = true;
+        if (viewport_options) |options| {
+            const max_top = screen.pages.total_rows -| screen.pages.rows;
+            const top: ?usize = if (options.top_row) |row|
+                @as(usize, @intCast(@min(row.*, max_top)))
+            else if (options.reveal) |cell| blk: {
+                _ = snapshotCellPin(screen, cell.*, snapshotViewportAnchor(screen)) orelse return false;
+                const before = snapshotViewportRows(screen) orelse return false;
+                break :blk @import("snapshot_viewport.zig").revealTop(before.start, before.end - before.start, screen.pages.total_rows, cell.y, options.padding_rows);
+            } else null;
+            if (top) |row| {
+                const before = snapshotViewportRows(screen) orelse return false;
+                if (row != before.start) {
+                    screen.scroll(.{ .row = row });
+                    t.flags.dirty.clear = true;
+                }
             }
         }
         const viewport = snapshotViewportRows(screen) orelse return false;
