@@ -2653,6 +2653,38 @@ pub const CAPI = struct {
     }
 
     /// Return the size information a surface has.
+    const FontData = extern struct {
+        data: ?[*]u8 = null,
+        len: usize = 0,
+        face_index: u32 = 0,
+    };
+
+    export fn ghostty_surface_read_font(surface: *Surface, bold: bool, result: *FontData) bool {
+        result.* = .{};
+        if (comptime !font.options.backend.hasFreetype()) return false;
+        const grid = surface.core_surface.renderer.font_grid;
+        // The bold face may still be deferred; getFace can load and cache it.
+        grid.lock.lockUncancelable(global.io());
+        defer grid.lock.unlock(global.io());
+        const face = grid.resolver.collection.getFace(.{ .style = if (bold) .bold else .regular }) catch return false;
+        face.ft_mutex.lockUncancelable(global.io());
+        defer face.ft_mutex.unlock(global.io());
+        // FreeType's zero SFNT tag reads the original complete font stream,
+        // including TTC collections and Ghostty's in-memory default font.
+        const bytes = (face.copyTable(global.alloc(), &.{ 0, 0, 0, 0 }) catch return false) orelse return false;
+        result.* = .{
+            .data = bytes.ptr,
+            .len = bytes.len,
+            .face_index = @intCast(face.face.handle.*.face_index & 0xffff),
+        };
+        return true;
+    }
+
+    export fn ghostty_font_data_free(result: *FontData) void {
+        if (result.data) |data| global.alloc().free(data[0..result.len]);
+        result.* = .{};
+    }
+
     export fn ghostty_surface_size(surface: *Surface) SurfaceSize {
         const grid_size = surface.core_surface.size.grid();
         return .{
