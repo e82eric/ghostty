@@ -1344,12 +1344,13 @@ typedef struct {
     const char* text;
     uintptr_t len;
 } ghostty_snapshot_selection_text_s;
-/** Extract an inclusive cell range from the frozen snapshot. `trim` removes
+/** Extract an inclusive cell range from the frozen snapshot. `rectangle`
+ * selects the same columns on each physical row. `trim` removes
  * trailing spaces on each line. Free the result with
  * ghostty_surface_snapshot_selection_text_free. */
 GHOSTTY_API bool ghostty_surface_snapshot_selection_text(
     ghostty_surface_t, uint64_t generation,
-    ghostty_snapshot_cell_range_s range, bool trim,
+    ghostty_snapshot_cell_range_s range, bool trim, bool rectangle,
     ghostty_snapshot_selection_text_s* result);
 GHOSTTY_API void ghostty_surface_snapshot_selection_text_free(
     ghostty_snapshot_selection_text_s* result);
