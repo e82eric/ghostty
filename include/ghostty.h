@@ -1364,14 +1364,24 @@ typedef struct {
     uintptr_t range_count;
     ghostty_snapshot_decoration_style_s style;
 } ghostty_snapshot_decoration_layer_s;
+typedef struct {
+    const ghostty_snapshot_cell_s* reveal;
+    uint32_t padding_rows;
+    const uint64_t* top_row;
+} ghostty_snapshot_viewport_options_s;
 /** Replace all snapshot decorations. Earlier layers take priority. Ranges in each
  * layer are nonoverlapping and ordered newest first in frozen screen coordinates.
- * reveal may be NULL; otherwise its cell is scrolled into view.
+ * viewport may be NULL to preserve the viewport. top_row, when non-NULL, sets
+ * the absolute viewport top and takes priority over reveal. Otherwise reveal
+ * scrolls its cell into view with padding_rows above and below. Padding reduces
+ * for short viewports; all positioning clamps to available history. Scrolling
+ * and preparing decorations happen under the same snapshot lock. Pointers are
+ * borrowed only for this call. The live terminal and its cursor are unchanged.
  */
 GHOSTTY_API bool ghostty_surface_snapshot_apply_decorations(
     ghostty_surface_t, uint64_t generation,
     const ghostty_snapshot_decoration_layer_s*, uintptr_t layer_count,
-    const ghostty_snapshot_cell_s* reveal);
+    const ghostty_snapshot_viewport_options_s* viewport);
 GHOSTTY_API bool ghostty_surface_snapshot_decorations_need_refresh(
     ghostty_surface_t, uint64_t generation);
 
