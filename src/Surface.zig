@@ -1184,6 +1184,11 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             },
         },
 
+        .application_protocol => |w| {
+            defer w.deinit();
+            const bytes = w.slice();
+            _ = try self.rt_app.performAction(.{ .surface = self }, .application_protocol, .{ .bytes = bytes.ptr, .len = bytes.len });
+        },
         .pwd_change => |w| {
             defer w.deinit();
 

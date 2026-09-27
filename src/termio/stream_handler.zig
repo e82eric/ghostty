@@ -335,6 +335,7 @@ pub const StreamHandler = struct {
             .decaln => try self.decaln(),
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
+            .application_protocol => self.surfaceMessageWriter(.{ .application_protocol = try apprt.surface.Message.WriteReq.init(self.alloc, value.bytes) }),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
             .progress_report => self.progressReport(value),
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),

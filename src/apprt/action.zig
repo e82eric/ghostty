@@ -356,6 +356,7 @@ pub const Action = union(Key) {
 
     /// Move a tab to a new window.
     move_tab_to_new_window,
+    application_protocol: ApplicationProtocol,
 
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
@@ -428,6 +429,7 @@ pub const Action = union(Key) {
         readonly,
         copy_title_to_clipboard,
         move_tab_to_new_window,
+        application_protocol,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -1069,3 +1071,6 @@ pub const OpenConfig = enum(c_int) {
 test {
     _ = compat_testing.refAllDeclsRecursive(@This());
 }
+
+/// Borrowed OSC 9001 payload; valid only during the application callback.
+pub const ApplicationProtocol = extern struct { bytes: [*]const u8, len: usize };

@@ -131,6 +131,8 @@ pub const Action = union(Key) {
     kitty_clipboard: KittyClipboard,
     kitty_dnd: KittyDnd,
 
+    application_protocol: ApcPutSlice,
+
     pub const Key = lib.Enum(
         lib.target,
         &.{
@@ -231,6 +233,7 @@ pub const Action = union(Key) {
             "semantic_prompt",
             "kitty_clipboard",
             "kitty_dnd",
+            "application_protocol",
         },
     );
 
@@ -2623,6 +2626,7 @@ pub fn Stream(comptime H: type) type {
                     });
                 },
 
+                .application_protocol => |v| self.handler.vt(.application_protocol, .{ .bytes = v }),
                 .report_pwd => |v| {
                     @branchHint(.likely);
                     self.handler.vt(.report_pwd, .{ .url = v.value });
@@ -3861,6 +3865,30 @@ test "stream: change window title with invalid utf-8" {
         s.nextSlice("\x1b]2;abc\xc0\x1b\\");
         try testing.expect(!s.handler.seen);
     }
+}
+
+test "stream: OSC 9001 application protocol fragmented input" {
+    const Handler = struct {
+        captured: [128]u8 = undefined,
+        len: usize = 0,
+        calls: usize = 0,
+        pub fn deinit(_: *@This()) void {}
+        pub fn vt(self: *@This(), comptime action: Action.Key, value: Action.Value(action)) void {
+            if (action == .application_protocol) {
+                @memcpy(self.captured[0..value.bytes.len], value.bytes);
+                self.len = value.bytes.len;
+                self.calls += 1;
+            }
+        }
+    };
+    var stream = Stream(Handler).init(.{ .handler = .{} });
+    defer stream.deinit();
+    for ([_][]const u8{ "\x1b]9", "001;Streaming", "Picker;token;{\"action\":\"files\"}", "\x1b", "\\" }) |chunk| stream.nextSlice(chunk);
+    try std.testing.expectEqual(@as(usize, 1), stream.handler.calls);
+    try std.testing.expectEqualStrings("StreamingPicker;token;{\"action\":\"files\"}", stream.handler.captured[0..stream.handler.len]);
+    stream.nextSlice("\x1b]9001;second\x07");
+    try std.testing.expectEqual(@as(usize, 2), stream.handler.calls);
+    try std.testing.expectEqualStrings("second", stream.handler.captured[0..stream.handler.len]);
 }
 
 test "stream: osc 52 large payload in chunks" {
