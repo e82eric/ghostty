@@ -109,30 +109,72 @@ pub const String = extern struct {
 
 /// Initialize ghostty global state.
 pub export fn ghostty_init(argc: usize, argv: [*][*:0]u8) c_int {
+    return initC(argc, argv, false);
+}
+
+/// Trust UTF-8 arguments supplied by an embedding host on Windows.
+pub export fn ghostty_init_utf8(argc: usize, argv: [*][*:0]u8) c_int {
+    return initC(argc, argv, true);
+}
+
+fn initC(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
     assert(builtin.link_libc);
 
-    global.init(.{
-        .c = .{
-            .argc = argc,
-            .argv = argv,
-            .environ = if (std.process.Environ.Block == std.process.Environ.PosixBlock)
-                // Asserting libc means that we can fast-path all POSIX blocks
-                .{ .block = .{ .slice = std.c.environ[0..env_len: {
-                    var len: usize = 0;
-                    while (std.c.environ[len]) |_| : (len += 1) {}
-                    break :env_len len;
-                } :null] } }
-            else
-                // Anything that is not using PosixBlock is a global block for
-                // purposes of initialization.
-                .{ .block = .{ .use_global = true } },
-        },
-    }) catch |err| {
+    const environ: std.process.Environ = if (std.process.Environ.Block == std.process.Environ.PosixBlock)
+        // Asserting libc means that we can fast-path all POSIX blocks
+        .{ .block = .{ .slice = std.c.environ[0..env_len: {
+            var len: usize = 0;
+            while (std.c.environ[len]) |_| : (len += 1) {}
+            break :env_len len;
+        } :null] } }
+    else
+        // Anything that is not using PosixBlock is a global block for
+        // purposes of initialization.
+        .{ .block = .{ .use_global = true } };
+    const options: global.InitOpts = if (utf8_args) blk: {
+        const args: std.process.Args = if (builtin.os.tag == .windows)
+            .{ .vector = windowsCommandLineFromUtf8Args(argc, argv) catch |err| {
+                std.log.err("failed to encode UTF-8 arguments error={}", .{err});
+                return 1;
+            } }
+        else
+            .{ .vector = argv[0..argc] };
+        break :blk .{ .c_utf8 = .{ .args = args, .environ = environ } };
+    } else .{ .c = .{ .argc = argc, .argv = argv, .environ = environ } };
+    global.init(options) catch |err| {
         std.log.err("failed to initialize ghostty error={}", .{err});
         return 1;
     };
 
     return 0;
+}
+
+/// The Windows std.process.Args iterator parses a UTF-16 command line, so
+/// quote each supplied UTF-8 argument using the CRT backslash rules.
+fn windowsCommandLineFromUtf8Args(argc: usize, argv: [*][*:0]u8) ![]u16 {
+    const alloc = std.heap.page_allocator;
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(alloc);
+    for (argv[0..argc], 0..) |ptr, index| {
+        if (index != 0) try line.append(alloc, ' ');
+        try line.append(alloc, '"');
+        var slashes: usize = 0;
+        for (std.mem.span(ptr)) |byte| {
+            if (byte == '\\') {
+                slashes += 1;
+                continue;
+            }
+            const count = slashes * (if (byte == '"') @as(usize, 2) else 1);
+            for (0..count) |_| try line.append(alloc, '\\');
+            slashes = 0;
+            if (byte == '"') try line.append(alloc, '\\');
+            try line.append(alloc, byte);
+        }
+        for (0..slashes * 2) |_| try line.append(alloc, '\\');
+        try line.append(alloc, '"');
+    }
+    // Global argument parsing retains this slice for the host's lifetime.
+    return std.unicode.utf8ToUtf16LeAlloc(alloc, line.items);
 }
 
 /// Runs an action if it is specified. If there is no action this returns

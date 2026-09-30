@@ -875,7 +875,12 @@ pub const Parser = struct {
                 else => self.state = .invalid,
             },
             .@"9001" => switch (c) {
-                ';' => self.captureTrailing(.fixed),
+                ';' => {
+                    self.captureTrailing(.allocating);
+                    if (self.capture) |*capture| {
+                        capture.max_bytes = @min(capture.max_bytes, 1024 * 1024);
+                    }
+                },
                 else => self.state = .invalid,
             },
             .@"99",
@@ -1017,6 +1022,23 @@ test "Parser allocating captures have a hard limit" {
         try testing.expectEqual(@as(usize, limit), cap.trailing().len);
         try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
     }
+}
+
+test "OSC 9001 accepts large picker requests within its one MiB limit" {
+    const testing = std.testing;
+    const limit = 1024 * 1024;
+    const payload = try testing.allocator.alloc(u8, limit);
+    defer testing.allocator.free(payload);
+    @memset(payload, 'a');
+
+    var p: Parser = .init(testing.allocator);
+    defer p.deinit();
+    p.nextSlice("9001;");
+    p.nextSlice(payload);
+    try testing.expectEqual(limit, p.capture.?.trailing().len);
+    try testing.expect(p.state != .invalid);
+    p.next('a');
+    try testing.expectEqual(Parser.State.invalid, p.state);
 }
 
 test "Parser nextSlice allocating captures have a hard limit" {
