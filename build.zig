@@ -277,9 +277,13 @@ pub fn build(b: *std.Build) !void {
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
-                cargo.addFileInput(b.path("example/rust-egui-terminal/src/shim.c"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/ghostty_shim.c"));
                 cargo.addFileInput(b.path("include/ghostty.h"));
                 cargo.step.dependOn(&import_lib_install.step);
+                cargo.step.dependOn(&b.addInstallLibFile(
+                    libghostty_vt_static.output,
+                    "ghostty-vt-static.lib",
+                ).step);
                 const egui_exe_install = b.addInstallFileWithDir(
                     .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui.exe") },
                     .bin,
@@ -318,9 +322,13 @@ pub fn build(b: *std.Build) !void {
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
-                cargo.addFileInput(b.path("example/rust-egui-terminal/src/shim.c"));
+                cargo.addFileInput(b.path("example/rust-egui-terminal/src/ghostty_shim.c"));
                 cargo.addFileInput(b.path("include/ghostty.h"));
                 cargo.step.dependOn(&public_lib_install.step);
+                cargo.step.dependOn(&b.addInstallLibFile(
+                    libghostty_vt_static.output,
+                    "libghostty-vt.a",
+                ).step);
                 const egui_exe_install = b.addInstallFileWithDir(
                     .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui") },
                     .bin,

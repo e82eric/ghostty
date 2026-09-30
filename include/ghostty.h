@@ -1161,6 +1161,7 @@ typedef enum {
 // Published API
 
 GHOSTTY_API int ghostty_init(uintptr_t, char**);
+GHOSTTY_API int ghostty_init_utf8(uintptr_t, char**);
 GHOSTTY_API void ghostty_cli_try_action(void);
 GHOSTTY_API ghostty_info_s ghostty_info(void);
 GHOSTTY_API const char* ghostty_translate(const char*);
@@ -1337,6 +1338,36 @@ GHOSTTY_API bool ghostty_surface_snapshot_text_row(
     ghostty_surface_t, uint64_t generation, uint64_t row,
     ghostty_snapshot_text_row_s*);
 GHOSTTY_API void ghostty_surface_snapshot_text_row_free(ghostty_snapshot_text_row_s*);
+
+/** VT-styled physical rows from a frozen snapshot. The result is owned by
+ * the caller until styled_rows_free. At most 32 rows can be requested.
+ * Rows are addressed in screen coordinates and retain their cell widths.
+ */
+typedef struct {
+    const char* text;
+    uintptr_t len;
+} ghostty_snapshot_styled_rows_s;
+GHOSTTY_API bool ghostty_surface_snapshot_styled_rows(
+    ghostty_surface_t, uint64_t generation, uint64_t first_row,
+    uint32_t row_count, ghostty_snapshot_styled_rows_s*);
+GHOSTTY_API void ghostty_surface_snapshot_styled_rows_free(
+    ghostty_snapshot_styled_rows_s*);
+
+/** One physical row at the live terminal cursor. Text is owned by the caller. */
+typedef struct {
+    const char* text;
+    uintptr_t len;
+    uintptr_t cursor_byte;
+    uint32_t cursor_column;
+} ghostty_live_cursor_line_s;
+GHOSTTY_API bool ghostty_surface_live_cursor_line(
+    ghostty_surface_t, ghostty_live_cursor_line_s*);
+GHOSTTY_API void ghostty_surface_live_cursor_line_free(ghostty_live_cursor_line_s*);
+
+/** Cursor cell relative to the currently visible live viewport. */
+typedef struct { uint32_t column; uint32_t row; } ghostty_live_cursor_position_s;
+GHOSTTY_API bool ghostty_surface_live_cursor_position(
+    ghostty_surface_t, ghostty_live_cursor_position_s*);
 
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
 typedef struct {

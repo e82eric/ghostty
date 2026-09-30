@@ -34,6 +34,12 @@ pub const xev = @import("xev").Dynamic;
 /// retrieve items stored in this state.
 var state: ?GlobalState = null;
 
+const CInitOpts = struct {
+    argc: usize,
+    argv: [*][*:0]u8,
+    environ: std.process.Environ,
+};
+
 pub const InitOpts = union(enum) {
     main: std.process.Init.Minimal,
 
@@ -44,9 +50,11 @@ pub const InitOpts = union(enum) {
     /// otherwise cause init to fail with InvalidAction.
     tool: std.process.Init.Minimal,
 
-    c: struct {
-        argc: usize,
-        argv: [*][*:0]u8,
+    c: CInitOpts,
+
+    /// C host that provides its own argument vector, including on Windows.
+    c_utf8: struct {
+        args: std.process.Args,
         environ: std.process.Environ,
     },
 };
@@ -63,6 +71,7 @@ pub fn init(opts: InitOpts) !void {
         .environ = switch (opts) {
             .main, .tool => |m| m.environ,
             .c => |c| c.environ,
+            .c_utf8 => |c| c.environ,
         },
         .args = switch (opts) {
             .main, .tool => |m| m.args,
@@ -72,6 +81,7 @@ pub fn init(opts: InitOpts) !void {
                 std.os.windows.peb().ProcessParameters.CommandLine.slice()
             else
                 c.argv[0..c.argc] },
+            .c_utf8 => |c| c.args,
         },
         .tmp_dir_path = null,
         .action = null,
@@ -123,7 +133,7 @@ pub fn init(opts: InitOpts) !void {
     // Tool binaries (ghostty-bench, ghostty-gen) have their own action
     // namespace and detect their own actions, so we skip detection here.
     self.action = switch (opts) {
-        .main, .c => try cli.action.detectArgs(
+        .main, .c, .c_utf8 => try cli.action.detectArgs(
             cli.ghostty.Action,
             self.alloc,
             self.args,

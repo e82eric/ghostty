@@ -2097,6 +2097,113 @@ pub const CAPI = struct {
         result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
     }
 
+    const SnapshotStyledRows = extern struct { text: ?[*]const u8, len: usize };
+
+    export fn ghostty_surface_snapshot_styled_rows(
+        surface: *Surface,
+        generation: u64,
+        first_row: u64,
+        row_count: u32,
+        result: *SnapshotStyledRows,
+    ) bool {
+        result.* = .{ .text = null, .len = 0 };
+        if (row_count == 0 or row_count > 32) return false;
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        if (surface.core_surface.presentation_snapshot_generation != generation or
+            surface.core_surface.presentation_snapshot == null) return false;
+        const t = state.presentation_terminal orelse return false;
+        const screen = t.screens.active;
+        const end_row = first_row +| (row_count - 1);
+        if (end_row >= screen.pages.total_rows or screen.pages.cols == 0) return false;
+        const anchor = snapshotViewportAnchor(screen);
+        const top = snapshotCellPin(screen, .{ .x = 0, .y = first_row }, anchor) orelse return false;
+        const bottom = snapshotCellPin(screen, .{
+            .x = screen.pages.cols - 1,
+            .y = end_row,
+        }, .{ .pin = top, .row = first_row }) orelse return false;
+        var formatter: @import("../terminal/formatter.zig").PageListFormatter = .init(&screen.pages, .{
+            .emit = .vt,
+            .unwrap = false,
+            .trim = false,
+            .palette = &t.colors.palette.current,
+        });
+        formatter.top_left = top;
+        formatter.bottom_right = bottom;
+        const alloc = global.alloc();
+        var writer: std.Io.Writer.Allocating = .init(alloc);
+        defer writer.deinit();
+        formatter.format(&writer.writer) catch return false;
+        const copy = alloc.dupe(u8, writer.written()) catch return false;
+        result.* = .{ .text = copy.ptr, .len = copy.len };
+        return true;
+    }
+
+    export fn ghostty_surface_snapshot_styled_rows_free(result: *SnapshotStyledRows) void {
+        if (result.text) |ptr| global.alloc().free(ptr[0..result.len]);
+        result.* = .{ .text = null, .len = 0 };
+    }
+
+    const LiveCursorLine = extern struct {
+        text: ?[*]const u8,
+        len: usize,
+        cursor_byte: usize,
+        cursor_column: u32,
+    };
+
+    const LiveCursorPosition = extern struct { column: u32, row: u32 };
+
+    export fn ghostty_surface_live_cursor_position(surface: *Surface, result: *LiveCursorPosition) bool {
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        const screen = state.terminal.screens.active;
+        const point = screen.pages.pointFromPin(.viewport, screen.cursor.page_pin.*) orelse return false;
+        result.* = .{ .column = point.viewport.x, .row = point.viewport.y };
+        return true;
+    }
+
+    export fn ghostty_surface_live_cursor_line(surface: *Surface, result: *LiveCursorLine) bool {
+        result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
+        const state = &surface.core_surface.renderer_state;
+        state.mutex.lockUncancelable(global.io());
+        defer state.mutex.unlock(global.io());
+        const screen = state.terminal.screens.active;
+        const pin = screen.cursor.page_pin.*;
+        const alloc = global.alloc();
+        var writer: std.Io.Writer.Allocating = .init(alloc);
+        defer writer.deinit();
+        var points: std.ArrayList(terminal.Coordinate) = .empty;
+        defer points.deinit(alloc);
+        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(pin.node.page(), .{
+            .emit = .plain,
+            .unwrap = false,
+            .trim = false,
+        });
+        formatter.start_y = pin.y;
+        formatter.end_y = pin.y;
+        formatter.point_map = .{ .alloc = alloc, .map = &points };
+        formatter.format(&writer.writer) catch return false;
+        const written = writer.written();
+        if (written.len != points.items.len) return false;
+        var cursor_byte = written.len;
+        for (points.items, 0..) |point, index| {
+            if (point.x >= pin.x) {
+                cursor_byte = index;
+                break;
+            }
+        }
+        const copy = alloc.dupe(u8, written) catch return false;
+        result.* = .{ .text = copy.ptr, .len = copy.len, .cursor_byte = cursor_byte, .cursor_column = pin.x };
+        return true;
+    }
+
+    export fn ghostty_surface_live_cursor_line_free(result: *LiveCursorLine) void {
+        if (result.text) |ptr| global.alloc().free(ptr[0..result.len]);
+        result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
+    }
+
     // ghostty_point_s
     const Point = extern struct {
         tag: Tag,
