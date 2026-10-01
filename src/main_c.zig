@@ -118,6 +118,7 @@ pub export fn ghostty_init_utf8(argc: usize, argv: [*][*:0]u8) c_int {
 }
 
 fn initC(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
+    @import("c_api_error.zig").clear();
     assert(builtin.link_libc);
 
     const environ: std.process.Environ = if (std.process.Environ.Block == std.process.Environ.PosixBlock)
@@ -134,6 +135,7 @@ fn initC(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
     const options: global.InitOpts = if (utf8_args) blk: {
         const args: std.process.Args = if (builtin.os.tag == .windows)
             .{ .vector = windowsCommandLineFromUtf8Args(argc, argv) catch |err| {
+                @import("c_api_error.zig").set(err);
                 std.log.err("failed to encode UTF-8 arguments error={}", .{err});
                 return 1;
             } }
@@ -142,11 +144,23 @@ fn initC(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
         break :blk .{ .c_utf8 = .{ .args = args, .environ = environ } };
     } else .{ .c = .{ .argc = argc, .argv = argv, .environ = environ } };
     global.init(options) catch |err| {
+        @import("c_api_error.zig").set(err);
         std.log.err("failed to initialize ghostty error={}", .{err});
         return 1;
     };
 
     return 0;
+}
+
+pub export fn ghostty_last_init_error() ?[*:0]const u8 {
+    return @import("c_api_error.zig").get();
+}
+
+pub export fn ghostty_last_error() ?[*:0]const u8 {
+    return @import("c_api_error.zig").get();
+}
+pub export fn ghostty_clear_error() void {
+    @import("c_api_error.zig").clear();
 }
 
 /// The Windows std.process.Args iterator parses a UTF-16 command line, so

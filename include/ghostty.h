@@ -1162,6 +1162,15 @@ typedef enum {
 
 GHOSTTY_API int ghostty_init(uintptr_t, char**);
 GHOSTTY_API int ghostty_init_utf8(uintptr_t, char**);
+// Borrowed, thread-local error name for the last init/config creation/loading/
+// finalization/app creation/surface creation operation, or NULL on success.
+// Copy before starting another such operation. Recoverable config diagnostics
+// are available separately through ghostty_config_get_diagnostic.
+GHOSTTY_API const char* ghostty_last_init_error(void);
+// Thread-local caught native error for synchronous embedded operations.
+// NULL/false results with no error can represent normal absence or boundaries.
+GHOSTTY_API const char* ghostty_last_error(void);
+GHOSTTY_API void ghostty_clear_error(void);
 GHOSTTY_API void ghostty_cli_try_action(void);
 GHOSTTY_API ghostty_info_s ghostty_info(void);
 GHOSTTY_API const char* ghostty_translate(const char*);
@@ -1175,6 +1184,14 @@ GHOSTTY_API void ghostty_config_load_file(ghostty_config_t, const char*);
 GHOSTTY_API void ghostty_config_load_default_files(ghostty_config_t);
 GHOSTTY_API void ghostty_config_load_recursive_files(ghostty_config_t);
 GHOSTTY_API void ghostty_config_finalize(ghostty_config_t);
+// Replace explicit terminal colors with a theme before finalization.
+// Other settings are preserved; diagnostics are read after finalize.
+GHOSTTY_API bool ghostty_config_set_theme(ghostty_config_t, const char*);
+// Callback paths are borrowed for the duration of each invocation, user directory first.
+GHOSTTY_API bool ghostty_config_theme_directories(void*, void (*)(void*, const char*));
+// For key "theme", returns the selected light/dark theme name. Borrowed until
+// the config is changed or freed; bytes are not necessarily NUL-terminated.
+typedef struct { const char *ptr; uintptr_t len; } ghostty_config_theme_name_s;
 GHOSTTY_API bool ghostty_config_get(ghostty_config_t, void*, const char*, uintptr_t);
 GHOSTTY_API ghostty_input_trigger_s ghostty_config_trigger(ghostty_config_t,
                                                               const char*,
@@ -1225,9 +1242,15 @@ GHOSTTY_API ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
 // Owned copy of the primary regular or bold SFNT font. Free with the paired function.
 // Unsupported font formats/backends return false without allocating.
 typedef struct {
+  uint32_t tag; // OpenType tag, e.g. 0x77676874 (wght).
+  float value;
+} ghostty_font_variation_s;
+typedef struct {
   uint8_t* data;
   size_t len;
   uint32_t face_index;
+  uint32_t variation_count;
+  ghostty_font_variation_s variations[32]; // Active design coordinates.
 } ghostty_font_data_s;
 GHOSTTY_API bool ghostty_surface_read_font(ghostty_surface_t, bool bold, ghostty_font_data_s*);
 GHOSTTY_API void ghostty_font_data_free(ghostty_font_data_s*);

@@ -16,6 +16,16 @@ const Value = key.Value;
 pub fn get(config: *const Config, k: Key, ptr_raw: *anyopaque) bool {
     @setEvalBranchQuota(10_000);
     switch (k) {
+        .theme => {
+            const theme = config.theme orelse return false;
+            const name = switch (config._conditional_state.theme) {
+                .light => theme.light,
+                .dark => theme.dark,
+            };
+            const ptr: *extern struct { ptr: [*]const u8, len: usize } = @ptrCast(@alignCast(ptr_raw));
+            ptr.* = .{ .ptr = name.ptr, .len = name.len };
+            return true;
+        },
         inline else => |tag| {
             const value = fieldByKey(config, tag);
             return getValue(ptr_raw, value);
@@ -27,6 +37,10 @@ pub fn get(config: *const Config, k: Key, ptr_raw: *anyopaque) bool {
 /// the type is not supported by the C API yet or the value is null.
 fn getValue(ptr_raw: *anyopaque, value: anytype) bool {
     switch (@TypeOf(value)) {
+        Config.TerminalColor => return switch (value) {
+            .color => |color| getValue(ptr_raw, color),
+            .@"cell-foreground", .@"cell-background" => false,
+        },
         ?[:0]const u8 => {
             const ptr: *?[*:0]const u8 = @ptrCast(@alignCast(ptr_raw));
             ptr.* = if (value) |slice| @ptrCast(slice.ptr) else null;
@@ -116,6 +130,37 @@ fn fieldByKey(self: *const Config, comptime k: Key) Value(k) {
     };
 
     return @field(self, field.name);
+}
+
+test "c_get: selected theme name" {
+    const testing = std.testing;
+    var config = try Config.default(testing.allocator);
+    defer config.deinit();
+    var name: extern struct { ptr: [*]const u8, len: usize } = undefined;
+    try testing.expect(!get(&config, .theme, &name));
+    config.theme = .{ .light = "day", .dark = "night" };
+    config._conditional_state.theme = .dark;
+    try testing.expect(get(&config, .theme, &name));
+    try testing.expectEqualStrings("night", name.ptr[0..name.len]);
+    config._conditional_state.theme = .light;
+    try testing.expect(get(&config, .theme, &name));
+    try testing.expectEqualStrings("day", name.ptr[0..name.len]);
+}
+
+test "c_get: literal selection colors" {
+    const testing = std.testing;
+    var config = try Config.default(testing.allocator);
+    defer config.deinit();
+    config.@"selection-background" = .{ .color = .{ .r = 18, .g = 52, .b = 86 } };
+    var result: Color.C = undefined;
+    try testing.expect(get(&config, .@"selection-background", &result));
+    try testing.expectEqual(@as(u8, 18), result.r);
+    try testing.expectEqual(@as(u8, 52), result.g);
+    try testing.expectEqual(@as(u8, 86), result.b);
+    config.@"selection-background" = .@"cell-foreground";
+    try testing.expect(!get(&config, .@"selection-background", &result));
+    config.@"selection-background" = null;
+    try testing.expect(!get(&config, .@"selection-background", &result));
 }
 
 test "c_get: u8" {
