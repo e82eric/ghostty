@@ -262,6 +262,7 @@ pub fn build(b: *std.Build) !void {
                 sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
 
                 const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                resources.addStepDependencies(egui_step);
                 const cargo = b.addSystemCommand(&.{
                     "cargo",
                     "build",
@@ -307,6 +308,7 @@ pub fn build(b: *std.Build) !void {
                 b.getInstallStep().dependOn(&public_lib_install.step);
 
                 const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                resources.addStepDependencies(egui_step);
                 const cargo = b.addSystemCommand(&.{
                     "cargo",
                     "build",

@@ -11,14 +11,118 @@ const Key = @import("key.zig").Key;
 
 const log = std.log.scoped(.config);
 
+/// Replace terminal color overrides with a theme before finalization.
+export fn ghostty_config_set_theme(self: *Config, name: [*:0]const u8) bool {
+    removeColorOverrides(self);
+    appendTheme(self, global.alloc(), std.mem.span(name)) catch return false;
+    return true;
+}
+
+/// A picker choice replaces terminal colors, including explicit colors from
+/// configuration files. Other replay inputs and command arguments stay intact.
+fn removeColorOverrides(self: *Config) void {
+    var write: usize = 0;
+    var command = false;
+    for (self._replay_steps.items) |step| {
+        if (step == .@"-e") command = true;
+        if (!command and step == .arg) {
+            const argument = std.mem.trimStart(u8, step.arg, "-");
+            const end = std.mem.indexOfScalar(u8, argument, '=') orelse argument.len;
+            const key = argument[0..end];
+            var color = false;
+            inline for (.{ "background", "foreground", "palette", "cursor-color", "cursor-text", "selection-background", "selection-foreground" }) |name| {
+                if (std.mem.eql(u8, key, name)) color = true;
+            }
+            if (color) continue;
+        }
+        self._replay_steps.items[write] = step;
+        write += 1;
+    }
+    self._replay_steps.items.len = write;
+}
+
+fn appendTheme(self: *Config, alloc: std.mem.Allocator, name: []const u8) !void {
+    const argument = try std.fmt.allocPrint(alloc, "--theme={s}", .{name});
+    defer alloc.free(argument);
+    var iter = @import("../cli.zig").args.sliceIterator(&.{argument});
+    const previous_len = self._replay_steps.items.len;
+    try self.loadIter(alloc, &iter);
+    // Keep the new option before the initial-command tail during replay.
+    for (self._replay_steps.items[0..previous_len], 0..) |step, index| {
+        if (step == .@"-e" and self._replay_steps.items.len == previous_len + 1) {
+            const added = self._replay_steps.items[previous_len];
+            std.mem.copyBackwards(@TypeOf(added), self._replay_steps.items[index + 1 ..], self._replay_steps.items[index..previous_len]);
+            self._replay_steps.items[index] = added;
+            break;
+        }
+    }
+}
+
+test "theme switching replaces colors and preserves other settings" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var td = testing.tmpDir(.{});
+    defer td.cleanup();
+    for ([_][]const u8{ "one", "two" }, [_][]const u8{
+        "background = #112233\nforeground = #ffffff\n",
+        "background = #445566\nforeground = #000000\n",
+    }) |name, content| {
+        var file = try td.dir.createFile(testing.io, name, .{});
+        defer file.close(testing.io);
+        var buffer: [256]u8 = undefined;
+        var writer = file.writer(testing.io, &buffer);
+        try writer.interface.writeAll(content);
+        try writer.end();
+    }
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const first = path_buffer[0..try td.dir.realPathFile(testing.io, "one", &path_buffer)];
+    var base = try Config.default(alloc);
+    defer base.deinit();
+    var iter = @import("../cli.zig").args.sliceIterator(&.{ "--font-size=23", "--foreground=#abcdef", "--palette=1=#abcdef", "-e", "echo", "hello" });
+    try base.loadIter(alloc, &iter);
+    try appendTheme(&base, alloc, first);
+    var candidate = try base.clone(alloc);
+    defer candidate.deinit();
+    try base.finalize();
+    const second = path_buffer[0..try td.dir.realPathFile(testing.io, "two", &path_buffer)];
+    try appendTheme(&candidate, alloc, second);
+    removeColorOverrides(&candidate);
+    try candidate.finalize();
+    try testing.expect(candidate._diagnostics.empty());
+    try testing.expectEqual(@as(f32, 23), candidate.@"font-size");
+    try testing.expectEqual(@as(u8, 0), candidate.foreground.r);
+    try testing.expect(candidate.palette.value[1].r != 0xab);
+    try testing.expectEqual(@as(u8, 0x44), candidate.background.r);
+    try testing.expectEqual(@as(u8, 0x11), base.background.r);
+    const command = candidate.@"initial-command".?.direct;
+    try testing.expectEqual(@as(usize, 2), command.len);
+    try testing.expectEqualStrings("echo", command[0]);
+    try testing.expectEqualStrings("hello", command[1]);
+}
+
+/// Enumerate the same search directories used by the theme loader, in priority order.
+export fn ghostty_config_theme_directories(userdata: ?*anyopaque, callback: *const fn (?*anyopaque, [*:0]const u8) callconv(.c) void) bool {
+    var arena = std.heap.ArenaAllocator.init(global.alloc());
+    defer arena.deinit();
+    var iter: @import("theme.zig").LocationIterator = .{ .arena_alloc = arena.allocator() };
+    while (iter.next() catch return false) |location| {
+        const path = arena.allocator().dupeZ(u8, location.dir) catch return false;
+        callback(userdata, path);
+    }
+    return true;
+}
+
 /// Create a new configuration filled with the initial default values.
 export fn ghostty_config_new() ?*Config {
+    @import("../c_api_error.zig").clear();
     const result = global.alloc().create(Config) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error allocating config err={}", .{err});
         return null;
     };
 
     result.* = Config.default(global.alloc()) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error creating config err={}", .{err});
         global.alloc().destroy(result);
         return null;
@@ -36,12 +140,15 @@ export fn ghostty_config_free(ptr: ?*Config) void {
 
 /// Deep clone the configuration.
 export fn ghostty_config_clone(self: *Config) ?*Config {
+    @import("../c_api_error.zig").clear();
     const result = global.alloc().create(Config) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error allocating config err={}", .{err});
         return null;
     };
 
     result.* = self.clone(global.alloc()) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error cloning config err={}", .{err});
         global.alloc().destroy(result);
         return null;
@@ -52,7 +159,9 @@ export fn ghostty_config_clone(self: *Config) ?*Config {
 
 /// Load the configuration from the CLI args.
 export fn ghostty_config_load_cli_args(self: *Config) void {
+    @import("../c_api_error.zig").clear();
     self.loadCliArgs(global.alloc()) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error loading config err={}", .{err});
     };
 }
@@ -61,7 +170,9 @@ export fn ghostty_config_load_cli_args(self: *Config) void {
 /// is usually done first. The default file locations are locations
 /// such as the home directory.
 export fn ghostty_config_load_default_files(self: *Config) void {
+    @import("../c_api_error.zig").clear();
     self.loadDefaultFiles(global.alloc()) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error loading config err={}", .{err});
     };
 }
@@ -69,8 +180,10 @@ export fn ghostty_config_load_default_files(self: *Config) void {
 /// Load the configuration from a specific file path.
 /// The path must be null-terminated.
 export fn ghostty_config_load_file(self: *Config, path: [*:0]const u8) void {
+    @import("../c_api_error.zig").clear();
     const path_slice = std.mem.span(path);
     self.loadFile(global.alloc(), path_slice) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error loading config from file path={s} err={}", .{ path_slice, err });
     };
 }
@@ -79,13 +192,17 @@ export fn ghostty_config_load_file(self: *Config, path: [*:0]const u8) void {
 /// file locations in the previously loaded configuration. This will
 /// recursively continue to load up to a built-in limit.
 export fn ghostty_config_load_recursive_files(self: *Config) void {
+    @import("../c_api_error.zig").clear();
     self.loadRecursiveFiles(global.alloc()) catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error loading config err={}", .{err});
     };
 }
 
 export fn ghostty_config_finalize(self: *Config) void {
+    @import("../c_api_error.zig").clear();
     self.finalize() catch |err| {
+        @import("../c_api_error.zig").set(err);
         log.err("error finalizing config err={}", .{err});
     };
 }

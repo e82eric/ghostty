@@ -248,6 +248,7 @@ pub const App = struct {
         const keymap: *input.Keymap = keymap: {
             if (self.keymap == null) {
                 self.keymap = input.Keymap.init() catch |err| {
+                    @import("../c_api_error.zig").set(err);
                     log.warn("error initializing keymap err={}", .{err});
                     return .unknown;
                 };
@@ -259,6 +260,7 @@ pub const App = struct {
         // Any layout larger than this is not something we can handle.
         var buf: [256]u8 = undefined;
         const id = keymap.sourceId(&buf) catch |err| {
+            @import("../c_api_error.zig").set(err);
             comptime assert(@TypeOf(err) == error{OutOfMemory});
             return .unknown;
         };
@@ -555,6 +557,7 @@ pub const Surface = struct {
             const wd = std.mem.sliceTo(c_wd, 0);
             if (wd.len > 0) wd: {
                 var dir = std.Io.Dir.openDirAbsolute(global.io(), wd, .{}) catch |err| {
+                    @import("../c_api_error.zig").set(err);
                     log.warn(
                         "error opening requested working directory dir={s} err={}",
                         .{ wd, err },
@@ -564,6 +567,7 @@ pub const Surface = struct {
                 defer dir.close(global.io());
 
                 const stat = dir.stat(global.io()) catch |err| {
+                    @import("../c_api_error.zig").set(err);
                     log.warn(
                         "failed to stat requested working directory dir={s} err={}",
                         .{ wd, err },
@@ -907,6 +911,7 @@ pub const Surface = struct {
             terminal.clipboard.Content,
             raw_contents.len,
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error completing clipboard request err={}", .{err});
             alloc.destroy(state);
             return;
@@ -923,6 +928,7 @@ pub const Surface = struct {
             []const u8,
             raw_available.len,
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error completing clipboard request err={}", .{err});
             alloc.destroy(state);
             return;
@@ -1018,6 +1024,7 @@ pub const Surface = struct {
 
     pub fn refresh(self: *Surface) void {
         self.core_surface.refreshCallback() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in refresh callback err={}", .{err});
             return;
         };
@@ -1025,6 +1032,7 @@ pub const Surface = struct {
 
     pub fn draw(self: *Surface) void {
         self.core_surface.draw() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in draw err={}", .{err});
             return;
         };
@@ -1043,6 +1051,7 @@ pub const Surface = struct {
         };
 
         self.core_surface.contentScaleCallback(self.content_scale) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in content scale callback err={}", .{err});
             return;
         };
@@ -1062,6 +1071,7 @@ pub const Surface = struct {
 
         // Call the primary callback.
         self.core_surface.sizeCallback(self.size) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in size callback err={}", .{err});
             return;
         };
@@ -1069,6 +1079,7 @@ pub const Surface = struct {
 
     pub fn colorSchemeCallback(self: *Surface, scheme: apprt.ColorScheme) void {
         self.core_surface.colorSchemeCallback(scheme) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error setting color scheme err={}", .{err});
             return;
         };
@@ -1081,6 +1092,7 @@ pub const Surface = struct {
         mods: input.Mods,
     ) bool {
         return self.core_surface.mouseButtonCallback(action, button, mods) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in mouse button callback err={}", .{err});
             return false;
         };
@@ -1092,6 +1104,7 @@ pub const Surface = struct {
         pressure: f64,
     ) void {
         self.core_surface.mousePressureCallback(stage, pressure) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in mouse pressure callback err={}", .{err});
             return;
         };
@@ -1104,6 +1117,7 @@ pub const Surface = struct {
         mods: input.ScrollMods,
     ) void {
         self.core_surface.scrollCallback(xoff, yoff, mods) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in scroll callback err={}", .{err});
             return;
         };
@@ -1120,6 +1134,7 @@ pub const Surface = struct {
             .x = @floatCast(x),
             .y = @floatCast(y),
         }) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err(
                 "error converting cursor pos to scaled pixels in cursor pos callback err={}",
                 .{err},
@@ -1141,6 +1156,7 @@ pub const Surface = struct {
         self.cursor_pos = pos;
 
         self.core_surface.cursorPosCallback(self.cursor_pos, mods) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in cursor pos callback err={}", .{err});
             return;
         };
@@ -1148,6 +1164,7 @@ pub const Surface = struct {
 
     pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) void {
         _ = self.core_surface.preeditCallback(preedit_) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in preedit callback err={}", .{err});
             return;
         };
@@ -1155,6 +1172,7 @@ pub const Surface = struct {
 
     pub fn textCallback(self: *Surface, text: []const u8) void {
         _ = self.core_surface.textCallback(text) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in key callback err={}", .{err});
             return;
         };
@@ -1162,6 +1180,7 @@ pub const Surface = struct {
 
     pub fn focusCallback(self: *Surface, focused: bool) void {
         self.core_surface.focusCallback(focused) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in focus callback err={}", .{err});
             return;
         };
@@ -1169,6 +1188,7 @@ pub const Surface = struct {
 
     pub fn occlusionCallback(self: *Surface, visible: bool) void {
         self.core_surface.occlusionCallback(visible) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error in occlusion callback err={}", .{err});
             return;
         };
@@ -1180,6 +1200,7 @@ pub const Surface = struct {
             .render_inspector,
             {},
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error rendering the inspector err={}", .{err});
             return;
         };
@@ -1277,6 +1298,7 @@ pub const Inspector = struct {
         // Setup our core inspector
         CoreInspector.setup();
         surface.core_surface.activateInspector() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("failed to activate inspector err={}", .{err});
         };
 
@@ -1716,12 +1738,20 @@ pub const CAPI = struct {
         generation: u64,
         result: *SnapshotView,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         const point = screen.pages.pointFromPin(.screen, screen.cursor.page_pin.*) orelse return false;
         const pages = &screen.pages;
@@ -1749,12 +1779,20 @@ pub const CAPI = struct {
         snap_right: bool,
         result: *SnapshotCell,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
         if (pin.rowAndCell().cell.wide == .spacer_tail) {
@@ -1776,22 +1814,34 @@ pub const CAPI = struct {
         rectangle: bool,
         result: *SnapshotSelectionText,
     ) bool {
+        @import("../c_api_error.zig").clear();
         result.* = .{ .text = null, .len = 0 };
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         var sel = snapshotCellSelection(screen, range, snapshotViewportAnchor(screen)) orelse return false;
         sel.rectangle = rectangle;
-        const text_result = screen.selectionString(global.alloc(), .{ .sel = sel, .trim = trim }) catch return false;
+        const text_result = screen.selectionString(global.alloc(), .{ .sel = sel, .trim = trim }) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         result.* = .{ .text = text_result.ptr, .len = text_result.len };
         return true;
     }
 
     export fn ghostty_surface_snapshot_selection_text_free(result: *SnapshotSelectionText) void {
+        @import("../c_api_error.zig").clear();
         if (result.text) |ptr| global.alloc().free(ptr[0 .. result.len + 1]);
         result.* = .{ .text = null, .len = 0 };
     }
@@ -1811,6 +1861,7 @@ pub const CAPI = struct {
         text_count: usize,
         viewport_options: ?*const SnapshotViewportOptions,
     ) bool {
+        @import("../c_api_error.zig").clear();
         if (layer_count > 254) return false;
         const layers = if (layers_ptr) |ptr| ptr[0..layer_count] else if (layer_count == 0) &.{} else return false;
         const text = if (text_ptr) |ptr| ptr[0..text_count] else if (text_count == 0) &.{} else return false;
@@ -1818,8 +1869,15 @@ pub const CAPI = struct {
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         if (viewport_options) |options| {
             const max_top = screen.pages.total_rows -| screen.pages.rows;
@@ -1847,19 +1905,28 @@ pub const CAPI = struct {
         var owned = true;
         defer if (owned) arena.deinit();
         const alloc = arena.allocator();
-        const core_layers = alloc.alloc(renderer.Message.DecorationLayer, layers.len) catch return false;
+        const core_layers = alloc.alloc(renderer.Message.DecorationLayer, layers.len) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         for (layers, core_layers) |layer, *dst| {
             if (layer.style.flags & ~@as(u32, 3) != 0) return false;
             const ordered = if (layer.ranges) |ptr| ptr[0..layer.range_count] else if (layer.range_count == 0) &.{} else return false;
             const visible = snapshotVisibleOrderedCellRanges(ordered, viewport);
-            const flattened = alloc.alloc(terminal.highlight.Flattened, visible.len) catch return false;
+            const flattened = alloc.alloc(terminal.highlight.Flattened, visible.len) catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return false;
+            };
             for (visible, flattened) |range, *item| {
                 const sel = snapshotCellSelection(screen, range, anchor) orelse return false;
                 item.* = terminal.highlight.Flattened.init(
                     alloc,
                     sel.topLeft(screen),
                     sel.bottomRight(screen),
-                ) catch return false;
+                ) catch |err| {
+                    @import("../c_api_error.zig").set(err);
+                    return false;
+                };
             }
             dst.* = .{
                 .ranges = flattened,
@@ -1877,7 +1944,10 @@ pub const CAPI = struct {
                 .codepoint = @intCast(item.codepoint),
                 .style = item.style.toCore(),
                 .bold = item.bold,
-            }) catch return false;
+            }) catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return false;
+            };
         }
         std.mem.sort(renderer.Message.DecorationText, core_text.items, {}, struct {
             fn less(_: void, a: renderer.Message.DecorationText, b: renderer.Message.DecorationText) bool {
@@ -1929,12 +1999,20 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: u64,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const viewport = snapshotViewportRows(t.screens.active) orelse return false;
         return !std.meta.eql(viewport, surface.core_surface.snapshot_decoration_viewport orelse return true);
     }
@@ -1943,14 +2021,23 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: u64,
     ) ?*SnapshotTextCursor {
+        @import("../c_api_error.zig").clear();
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return null;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return null;
+        }
         const t = state.presentation_terminal orelse return null;
-        const cursor = terminal.SnapshotTextCursor.init(t.screens.active, global.alloc()) catch return null;
-        const result = global.alloc().create(SnapshotTextCursor) catch {
+        const cursor = terminal.SnapshotTextCursor.init(t.screens.active, global.alloc()) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return null;
+        };
+        const result = global.alloc().create(SnapshotTextCursor) catch |err| {
+            @import("../c_api_error.zig").set(err);
             var owned = cursor;
             owned.deinit();
             return null;
@@ -1960,16 +2047,22 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_surface_snapshot_text_cursor_free(cursor: *SnapshotTextCursor) void {
+        @import("../c_api_error.zig").clear();
         cursor.cursor.deinit();
         global.alloc().destroy(cursor);
     }
 
     export fn ghostty_surface_snapshot_text_cursor_reset(cursor: *SnapshotTextCursor) bool {
+        @import("../c_api_error.zig").clear();
         const state = &cursor.surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (cursor.surface.core_surface.presentation_snapshot_generation != cursor.generation or
-            cursor.surface.core_surface.presentation_snapshot == null) return false;
+            cursor.surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
         cursor.cursor.reset();
         return true;
     }
@@ -1978,12 +2071,20 @@ pub const CAPI = struct {
         cursor: *SnapshotTextCursor,
         result: *SnapshotTextChunk,
     ) c_int {
+        @import("../c_api_error.zig").clear();
         const state = &cursor.surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (cursor.surface.core_surface.presentation_snapshot_generation != cursor.generation or
-            cursor.surface.core_surface.presentation_snapshot == null) return -1;
-        const chunk = (cursor.cursor.next() catch return -1) orelse return 0;
+            cursor.surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return -1;
+        }
+        const chunk = (cursor.cursor.next() catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return -1;
+        }) orelse return 0;
         result.* = .{
             .text = chunk.text.ptr,
             .points = chunk.points.ptr,
@@ -2000,13 +2101,21 @@ pub const CAPI = struct {
         row: u64,
         result: *SnapshotTextRow,
     ) bool {
+        @import("../c_api_error.zig").clear();
         result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         const anchor: ?SnapshotAnchor = if (surface.core_surface.snapshot_text_row_anchor) |a|
             .{ .pin = a.pin, .row = a.row }
@@ -2027,11 +2136,18 @@ pub const CAPI = struct {
         formatter.start_y = pin.y;
         formatter.end_y = pin.y;
         formatter.point_map = .{ .alloc = alloc, .map = &points };
-        formatter.format(&text_writer.writer) catch return false;
+        formatter.format(&text_writer.writer) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         const written = text_writer.written();
         if (written.len != points.items.len) return false;
-        const text_copy = alloc.dupe(u8, written) catch return false;
-        const columns = alloc.alloc(u32, written.len) catch {
+        const text_copy = alloc.dupe(u8, written) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
+        const columns = alloc.alloc(u32, written.len) catch |err| {
+            @import("../c_api_error.zig").set(err);
             alloc.free(text_copy);
             return false;
         };
@@ -2046,6 +2162,7 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_surface_snapshot_text_row_free(result: *SnapshotTextRow) void {
+        @import("../c_api_error.zig").clear();
         const alloc = global.alloc();
         if (result.text) |ptr| alloc.free(ptr[0..result.len]);
         if (result.columns) |ptr| alloc.free(ptr[0..result.len]);
@@ -2061,14 +2178,22 @@ pub const CAPI = struct {
         row_count: u32,
         result: *SnapshotStyledRows,
     ) bool {
+        @import("../c_api_error.zig").clear();
         result.* = .{ .text = null, .len = 0 };
         if (row_count == 0 or row_count > 32) return false;
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
         if (surface.core_surface.presentation_snapshot_generation != generation or
-            surface.core_surface.presentation_snapshot == null) return false;
-        const t = state.presentation_terminal orelse return false;
+            surface.core_surface.presentation_snapshot == null)
+        {
+            @import("../c_api_error.zig").set(error.SnapshotExpired);
+            return false;
+        }
+        const t = state.presentation_terminal orelse {
+            @import("../c_api_error.zig").set(error.SnapshotUnavailable);
+            return false;
+        };
         const screen = t.screens.active;
         const end_row = first_row +| (row_count - 1);
         if (end_row >= screen.pages.total_rows or screen.pages.cols == 0) return false;
@@ -2089,13 +2214,20 @@ pub const CAPI = struct {
         const alloc = global.alloc();
         var writer: std.Io.Writer.Allocating = .init(alloc);
         defer writer.deinit();
-        formatter.format(&writer.writer) catch return false;
-        const copy = alloc.dupe(u8, writer.written()) catch return false;
+        formatter.format(&writer.writer) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
+        const copy = alloc.dupe(u8, writer.written()) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         result.* = .{ .text = copy.ptr, .len = copy.len };
         return true;
     }
 
     export fn ghostty_surface_snapshot_styled_rows_free(result: *SnapshotStyledRows) void {
+        @import("../c_api_error.zig").clear();
         if (result.text) |ptr| global.alloc().free(ptr[0..result.len]);
         result.* = .{ .text = null, .len = 0 };
     }
@@ -2110,6 +2242,7 @@ pub const CAPI = struct {
     const LiveCursorPosition = extern struct { column: u32, row: u32 };
 
     export fn ghostty_surface_live_cursor_position(surface: *Surface, result: *LiveCursorPosition) bool {
+        @import("../c_api_error.zig").clear();
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
         defer state.mutex.unlock(global.io());
@@ -2120,6 +2253,7 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_surface_live_cursor_line(surface: *Surface, result: *LiveCursorLine) bool {
+        @import("../c_api_error.zig").clear();
         result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
         const state = &surface.core_surface.renderer_state;
         state.mutex.lockUncancelable(global.io());
@@ -2139,7 +2273,10 @@ pub const CAPI = struct {
         formatter.start_y = pin.y;
         formatter.end_y = pin.y;
         formatter.point_map = .{ .alloc = alloc, .map = &points };
-        formatter.format(&writer.writer) catch return false;
+        formatter.format(&writer.writer) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         const written = writer.written();
         if (written.len != points.items.len) return false;
         var cursor_byte = written.len;
@@ -2149,12 +2286,16 @@ pub const CAPI = struct {
                 break;
             }
         }
-        const copy = alloc.dupe(u8, written) catch return false;
+        const copy = alloc.dupe(u8, written) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         result.* = .{ .text = copy.ptr, .len = copy.len, .cursor_byte = cursor_byte, .cursor_column = pin.x };
         return true;
     }
 
     export fn ghostty_surface_live_cursor_line_free(result: *LiveCursorLine) void {
+        @import("../c_api_error.zig").clear();
         if (result.text) |ptr| global.alloc().free(ptr[0..result.len]);
         result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
     }
@@ -2356,7 +2497,9 @@ pub const CAPI = struct {
         opts: *const apprt.runtime.App.Options,
         config: *const Config,
     ) ?*App {
+        @import("../c_api_error.zig").clear();
         return app_new_(opts, config) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error initializing app err={}", .{err});
             return null;
         };
@@ -2381,17 +2524,21 @@ pub const CAPI = struct {
     /// Tick the event loop. This should be called whenever the "wakeup"
     /// callback is invoked for the runtime.
     export fn ghostty_app_tick(v: *App) void {
+        @import("../c_api_error.zig").clear();
         v.core_app.tick(v) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error app tick err={}", .{err});
         };
     }
 
     /// Return the userdata associated with the app.
     export fn ghostty_app_userdata(v: *App) ?*anyopaque {
+        @import("../c_api_error.zig").clear();
         return v.opts.userdata;
     }
 
     export fn ghostty_app_free(v: *App) void {
+        @import("../c_api_error.zig").clear();
         const core_app = v.core_app;
         v.terminate();
         global.alloc().destroy(v);
@@ -2403,6 +2550,7 @@ pub const CAPI = struct {
         app: *App,
         focused: bool,
     ) void {
+        @import("../c_api_error.zig").clear();
         app.focusEvent(focused);
     }
 
@@ -2413,7 +2561,9 @@ pub const CAPI = struct {
         app: *App,
         event: KeyEvent,
     ) bool {
+        @import("../c_api_error.zig").clear();
         return app.keyEvent(.app, event.keyEvent()) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.warn("error processing key event err={}", .{err});
             return false;
         };
@@ -2427,6 +2577,7 @@ pub const CAPI = struct {
         config: *Config,
         event: KeyEvent,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const core_event = event.keyEvent().core() orelse {
             log.warn("error processing key event", .{});
             return false;
@@ -2438,7 +2589,9 @@ pub const CAPI = struct {
     /// Notify the app that the keyboard was changed. This causes the
     /// keyboard layout to be reloaded from the OS.
     export fn ghostty_app_keyboard_changed(v: *App) void {
+        @import("../c_api_error.zig").clear();
         v.reloadKeymap() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error reloading keyboard map err={}", .{err});
             return;
         };
@@ -2446,7 +2599,9 @@ pub const CAPI = struct {
 
     /// Open the configuration.
     export fn ghostty_app_open_config(v: *App) void {
+        @import("../c_api_error.zig").clear();
         _ = v.performAction(.app, .open_config, .new_window) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error reloading config err={}", .{err});
             return;
         };
@@ -2458,7 +2613,9 @@ pub const CAPI = struct {
         v: *App,
         config: *const Config,
     ) void {
+        @import("../c_api_error.zig").clear();
         v.core_app.updateConfig(v, config) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error updating config err={}", .{err});
             return;
         };
@@ -2466,19 +2623,23 @@ pub const CAPI = struct {
 
     /// Returns true if the app needs to confirm quitting.
     export fn ghostty_app_needs_confirm_quit(v: *App) bool {
+        @import("../c_api_error.zig").clear();
         return v.core_app.needsConfirmQuit();
     }
 
     /// Returns true if the app has global keybinds.
     export fn ghostty_app_has_global_keybinds(v: *App) bool {
+        @import("../c_api_error.zig").clear();
         return v.hasGlobalKeybinds();
     }
 
     /// Update the color scheme of the app.
     export fn ghostty_app_set_color_scheme(v: *App, scheme_raw: c_int) void {
+        @import("../c_api_error.zig").clear();
         const scheme = std.enums.fromInt(apprt.ColorScheme, scheme_raw) orelse return;
 
         v.core_app.colorSchemeEvent(v, scheme) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error setting color scheme err={}", .{err});
             return;
         };
@@ -2486,6 +2647,7 @@ pub const CAPI = struct {
 
     /// Returns initial surface options.
     export fn ghostty_surface_config_new() apprt.Surface.Options {
+        @import("../c_api_error.zig").clear();
         return .{};
     }
 
@@ -2494,7 +2656,9 @@ pub const CAPI = struct {
         app: *App,
         opts: *const apprt.Surface.Options,
     ) ?*Surface {
+        @import("../c_api_error.zig").clear();
         return surface_new_(app, opts) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error initializing surface err={}", .{err});
             return null;
         };
@@ -2508,16 +2672,19 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_surface_free(ptr: *Surface) void {
+        @import("../c_api_error.zig").clear();
         ptr.app.closeSurface(ptr);
     }
 
     /// Returns the userdata associated with the surface.
     export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
+        @import("../c_api_error.zig").clear();
         return surface.userdata;
     }
 
     /// Returns the app associated with a surface.
     export fn ghostty_surface_app(surface: *Surface) *App {
+        @import("../c_api_error.zig").clear();
         return surface.app;
     }
 
@@ -2526,6 +2693,7 @@ pub const CAPI = struct {
         surface: *Surface,
         source: apprt.surface.NewSurfaceContext,
     ) Surface.Options {
+        @import("../c_api_error.zig").clear();
         return surface.newSurfaceOptions(source);
     }
 
@@ -2534,7 +2702,9 @@ pub const CAPI = struct {
         surface: *Surface,
         config: *const Config,
     ) void {
+        @import("../c_api_error.zig").clear();
         surface.core_surface.updateConfig(config) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error updating config err={}", .{err});
             return;
         };
@@ -2542,16 +2712,19 @@ pub const CAPI = struct {
 
     /// Returns true if the surface needs to confirm quitting.
     export fn ghostty_surface_needs_confirm_quit(surface: *Surface) bool {
+        @import("../c_api_error.zig").clear();
         return surface.core_surface.needsConfirmQuit();
     }
 
     /// Returns true if the surface process has exited.
     export fn ghostty_surface_process_exited(surface: *Surface) bool {
+        @import("../c_api_error.zig").clear();
         return surface.core_surface.child_exited;
     }
 
     /// Returns true if the surface has a selection.
     export fn ghostty_surface_has_selection(surface: *Surface) bool {
+        @import("../c_api_error.zig").clear();
         return surface.core_surface.hasSelection();
     }
 
@@ -2561,6 +2734,7 @@ pub const CAPI = struct {
         surface: *Surface,
         result: *Text,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const core_surface = &surface.core_surface;
         core_surface.renderer_state.mutex.lockUncancelable(global.io());
         defer core_surface.renderer_state.mutex.unlock(global.io());
@@ -2582,6 +2756,7 @@ pub const CAPI = struct {
         sel: Selection,
         result: *Text,
     ) bool {
+        @import("../c_api_error.zig").clear();
         surface.core_surface.renderer_state.mutex.lockUncancelable(global.io());
         defer surface.core_surface.renderer_state.mutex.unlock(global.io());
 
@@ -2604,6 +2779,7 @@ pub const CAPI = struct {
             global.alloc(),
             core_sel,
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.warn("error reading text err={}", .{err});
             return false;
         };
@@ -2628,6 +2804,7 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_surface_free_text(_: *Surface, ptr: *Text) void {
+        @import("../c_api_error.zig").clear();
         ptr.deinit();
     }
 
@@ -2635,7 +2812,9 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: *u64,
     ) bool {
+        @import("../c_api_error.zig").clear();
         surface.core_surface.beginPresentationSnapshot() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.warn("error beginning snapshot presentation err={}", .{err});
             return false;
         };
@@ -2647,6 +2826,7 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: u64,
     ) bool {
+        @import("../c_api_error.zig").clear();
         if (surface.core_surface.presentation_snapshot == null or
             surface.core_surface.presentation_snapshot_generation != generation)
         {
@@ -2658,12 +2838,14 @@ pub const CAPI = struct {
 
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
+        @import("../c_api_error.zig").clear();
         surface.refresh();
     }
 
     /// Tell the surface that it needs to schedule a render
     /// call as soon as possible (NOW if possible).
     export fn ghostty_surface_draw(surface: *Surface) void {
+        @import("../c_api_error.zig").clear();
         surface.draw();
     }
 
@@ -2673,6 +2855,7 @@ pub const CAPI = struct {
         surface: *Surface,
         result: *GLFrameDescription,
     ) bool {
+        @import("../c_api_error.zig").clear();
         if (comptime renderer.Renderer.ExportedFrame == void) return false;
 
         const frame = surface.core_surface.renderer.takeFrame() orelse return false;
@@ -2685,7 +2868,8 @@ pub const CAPI = struct {
         };
 
         const alloc = surface.app.core_app.alloc;
-        const owned = alloc.create(GLFrame) catch {
+        const owned = alloc.create(GLFrame) catch |err| {
+            @import("../c_api_error.zig").set(err);
             frame.deinit();
             return false;
         };
@@ -2701,6 +2885,7 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_gl_frame_release(frame: *GLFrame) void {
+        @import("../c_api_error.zig").clear();
         if (comptime renderer.Renderer.ExportedFrame != void) {
             const alloc = frame.alloc;
             frame.frame.deinit();
@@ -2711,43 +2896,82 @@ pub const CAPI = struct {
     /// Update the size of a surface. This will trigger resize notifications
     /// to the pty and the renderer.
     export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
+        @import("../c_api_error.zig").clear();
         surface.updateSize(w, h);
     }
 
     /// Return the size information a surface has.
+    const FontVariation = extern struct {
+        tag: u32 = 0,
+        value: f32 = 0,
+    };
     const FontData = extern struct {
         data: ?[*]u8 = null,
         len: usize = 0,
         face_index: u32 = 0,
+        variation_count: u32 = 0,
+        variations: [32]FontVariation = @splat(.{}),
     };
 
     export fn ghostty_surface_read_font(surface: *Surface, bold: bool, result: *FontData) bool {
+        @import("../c_api_error.zig").clear();
         result.* = .{};
         if (comptime !font.options.backend.hasFreetype()) return false;
         const grid = surface.core_surface.renderer.font_grid;
         // The bold face may still be deferred; getFace can load and cache it.
         grid.lock.lockUncancelable(global.io());
         defer grid.lock.unlock(global.io());
-        const face = grid.resolver.collection.getFace(.{ .style = if (bold) .bold else .regular }) catch return false;
+        const face = grid.resolver.collection.getFace(.{ .style = if (bold) .bold else .regular }) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         face.ft_mutex.lockUncancelable(global.io());
         defer face.ft_mutex.unlock(global.io());
+        var exported: FontData = .{};
+        if (face.face.hasMultipleMasters()) {
+            const mm = face.face.getMMVar() catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return false;
+            };
+            defer face.lib.lib.doneMMVar(mm);
+            if (mm.num_axis > exported.variations.len) {
+                @import("../c_api_error.zig").set(error.UnsupportedFontVariationAxes);
+                return false;
+            }
+            var coordinates: [32]@import("freetype").c.FT_Fixed = undefined;
+            face.face.getVarDesignCoordinates(coordinates[0..mm.num_axis]) catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return false;
+            };
+            exported.variation_count = @intCast(mm.num_axis);
+            for (0..mm.num_axis) |i| {
+                exported.variations[i] = .{
+                    .tag = @intCast(mm.axis[i].tag),
+                    .value = @as(f32, @floatFromInt(coordinates[i])) / 65536.0,
+                };
+            }
+        }
         // FreeType's zero SFNT tag reads the original complete font stream,
         // including TTC collections and Ghostty's in-memory default font.
-        const bytes = (face.copyTable(global.alloc(), &.{ 0, 0, 0, 0 }) catch return false) orelse return false;
-        result.* = .{
-            .data = bytes.ptr,
-            .len = bytes.len,
-            .face_index = @intCast(face.face.handle.*.face_index & 0xffff),
-        };
+        const bytes = (face.copyTable(global.alloc(), &.{ 0, 0, 0, 0 }) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        }) orelse return false;
+        exported.data = bytes.ptr;
+        exported.len = bytes.len;
+        exported.face_index = @intCast(face.face.handle.*.face_index & 0xffff);
+        result.* = exported;
         return true;
     }
 
     export fn ghostty_font_data_free(result: *FontData) void {
+        @import("../c_api_error.zig").clear();
         if (result.data) |data| global.alloc().free(data[0..result.len]);
         result.* = .{};
     }
 
     export fn ghostty_surface_size(surface: *Surface) SurfaceSize {
+        @import("../c_api_error.zig").clear();
         const grid_size = surface.core_surface.size.grid();
         return .{
             .columns = grid_size.columns,
@@ -2761,14 +2985,17 @@ pub const CAPI = struct {
 
     /// Returns the PID of the foreground process for the surface PTY.
     export fn ghostty_surface_foreground_pid(surface: *Surface) u64 {
+        @import("../c_api_error.zig").clear();
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
     }
 
     /// Returns the PTY name for the surface. The returned string must be
     /// freed by the caller via ghostty_string_free.
     export fn ghostty_surface_tty_name(surface: *Surface) String {
+        @import("../c_api_error.zig").clear();
         const tty_name = surface.core_surface.getProcessInfo(.tty_name) orelse return .empty;
         const copy = surface.app.core_app.alloc.dupeZ(u8, tty_name) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error allocating tty name err={}", .{err});
             return .empty;
         };
@@ -2778,22 +3005,26 @@ pub const CAPI = struct {
 
     /// Update the color scheme of the surface.
     export fn ghostty_surface_set_color_scheme(surface: *Surface, scheme_raw: c_int) void {
+        @import("../c_api_error.zig").clear();
         const scheme = std.enums.fromInt(apprt.ColorScheme, scheme_raw) orelse return;
         surface.colorSchemeCallback(scheme);
     }
 
     /// Update the content scale of the surface.
     export fn ghostty_surface_set_content_scale(surface: *Surface, x: f64, y: f64) void {
+        @import("../c_api_error.zig").clear();
         surface.updateContentScale(x, y);
     }
 
     /// Update the focused state of a surface.
     export fn ghostty_surface_set_focus(surface: *Surface, focused: bool) void {
+        @import("../c_api_error.zig").clear();
         surface.focusCallback(focused);
     }
 
     /// Update the occlusion state of a surface.
     export fn ghostty_surface_set_occlusion(surface: *Surface, visible: bool) void {
+        @import("../c_api_error.zig").clear();
         surface.occlusionCallback(visible);
     }
 
@@ -2805,6 +3036,7 @@ pub const CAPI = struct {
         surface: *Surface,
         mods_raw: c_int,
     ) c_int {
+        @import("../c_api_error.zig").clear();
         const mods: input.Mods = @bitCast(@as(
             input.Mods.Backing,
             @truncate(@as(c_uint, @bitCast(mods_raw))),
@@ -2823,10 +3055,12 @@ pub const CAPI = struct {
         surface: *Surface,
         event: KeyEvent,
     ) bool {
+        @import("../c_api_error.zig").clear();
         return surface.app.keyEvent(
             .{ .surface = surface },
             event.keyEvent(),
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.warn("error processing key event err={}", .{err});
             return false;
         };
@@ -2845,6 +3079,7 @@ pub const CAPI = struct {
         unshifted_codepoint: u32,
         text: ?[*:0]const u8,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const native = for (input.keycodes.entries) |entry| {
             if (entry.usb == usb) break entry.native;
         } else 0;
@@ -2871,6 +3106,7 @@ pub const CAPI = struct {
         event: KeyEvent,
         c_flags: ?*input.Binding.Flags.C,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const core_event = event.keyEvent().core() orelse {
             log.warn("error processing key event", .{});
             return false;
@@ -2891,6 +3127,7 @@ pub const CAPI = struct {
         ptr: [*]const u8,
         len: usize,
     ) void {
+        @import("../c_api_error.zig").clear();
         surface.textCallback(ptr[0..len]);
     }
 
@@ -2901,12 +3138,14 @@ pub const CAPI = struct {
         ptr: [*]const u8,
         len: usize,
     ) void {
+        @import("../c_api_error.zig").clear();
         surface.preeditCallback(if (len == 0) null else ptr[0..len]);
     }
 
     /// Returns true if the surface currently has mouse capturing
     /// enabled.
     export fn ghostty_surface_mouse_captured(surface: *Surface) bool {
+        @import("../c_api_error.zig").clear();
         return surface.core_surface.mouseCaptured();
     }
 
@@ -2917,6 +3156,7 @@ pub const CAPI = struct {
         button: input.MouseButton,
         mods: c_int,
     ) bool {
+        @import("../c_api_error.zig").clear();
         return surface.mouseButtonCallback(
             action,
             button,
@@ -2934,6 +3174,7 @@ pub const CAPI = struct {
         y: f64,
         mods: c_int,
     ) void {
+        @import("../c_api_error.zig").clear();
         surface.cursorPosCallback(
             x,
             y,
@@ -2950,6 +3191,7 @@ pub const CAPI = struct {
         y: f64,
         scroll_mods: c_int,
     ) void {
+        @import("../c_api_error.zig").clear();
         surface.scrollCallback(
             x,
             y,
@@ -2962,6 +3204,7 @@ pub const CAPI = struct {
         stage_raw: u32,
         pressure: f64,
     ) void {
+        @import("../c_api_error.zig").clear();
         const stage = std.enums.fromInt(input.MousePressureStage, stage_raw) orelse return;
         surface.mousePressureCallback(stage, pressure);
     }
@@ -2973,6 +3216,7 @@ pub const CAPI = struct {
         width: *f64,
         height: *f64,
     ) void {
+        @import("../c_api_error.zig").clear();
         const pos = surface.core_surface.imePoint();
         x.* = pos.x;
         y.* = pos.y;
@@ -2983,10 +3227,12 @@ pub const CAPI = struct {
     /// Request that the surface become closed. This will go through the
     /// normal trigger process that a close surface input binding would.
     export fn ghostty_surface_request_close(ptr: *Surface) void {
+        @import("../c_api_error.zig").clear();
         // Prefer the binding path so close goes through the same Surface
         // hook as a close-surface keybind, rather than a raw close() that
         // bypasses it.
         const handled = ptr.core_surface.performBindingAction(.{ .close_surface = {} }) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error requesting close err={}", .{err});
             return;
         };
@@ -2995,6 +3241,7 @@ pub const CAPI = struct {
 
     /// Request that the surface split in the given direction.
     export fn ghostty_surface_split(ptr: *Surface, direction: apprt.action.SplitDirection) void {
+        @import("../c_api_error.zig").clear();
         // Menu shortcuts call this C API directly. Route through
         // performBindingAction so menus and keybinds share one path,
         // matching GTK.
@@ -3007,6 +3254,7 @@ pub const CAPI = struct {
             },
         };
         _ = ptr.core_surface.performBindingAction(action) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error creating new split err={}", .{err});
             return;
         };
@@ -3017,6 +3265,7 @@ pub const CAPI = struct {
         ptr: *Surface,
         direction: apprt.action.GotoSplit,
     ) void {
+        @import("../c_api_error.zig").clear();
         const action: input.Binding.Action = .{
             .goto_split = switch (direction) {
                 .previous => .previous,
@@ -3028,6 +3277,7 @@ pub const CAPI = struct {
             },
         };
         _ = ptr.core_surface.performBindingAction(action) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error focusing split err={}", .{err});
             return;
         };
@@ -3042,11 +3292,13 @@ pub const CAPI = struct {
         direction: apprt.action.ResizeSplit.Direction,
         amount: u16,
     ) void {
+        @import("../c_api_error.zig").clear();
         _ = ptr.app.performAction(
             .{ .surface = &ptr.core_surface },
             .resize_split,
             .{ .direction = direction, .amount = amount },
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error resizing split err={}", .{err});
             return;
         };
@@ -3054,11 +3306,13 @@ pub const CAPI = struct {
 
     /// Equalize the size of all splits in the current window.
     export fn ghostty_surface_split_equalize(ptr: *Surface) void {
+        @import("../c_api_error.zig").clear();
         _ = ptr.app.performAction(
             .{ .surface = &ptr.core_surface },
             .equalize_splits,
             {},
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error equalizing splits err={}", .{err});
             return;
         };
@@ -3070,13 +3324,16 @@ pub const CAPI = struct {
         action_ptr: [*]const u8,
         action_len: usize,
     ) bool {
+        @import("../c_api_error.zig").clear();
         const action_str = action_ptr[0..action_len];
         const action = input.Binding.Action.parse(action_str) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error parsing binding action action={s} err={}", .{ action_str, err });
             return false;
         };
 
         return ptr.core_surface.performBindingAction(action) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error performing binding action action={f} err={}", .{ action, err });
             return false;
         };
@@ -3096,6 +3353,7 @@ pub const CAPI = struct {
         complete: *const ClipboardComplete,
         state: *apprt.ClipboardRequest,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.completeClipboardRequest(complete, state);
     }
 
@@ -3107,25 +3365,31 @@ pub const CAPI = struct {
         ptr: *Surface,
         state: *apprt.ClipboardRequest,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.denyClipboardRequest(state);
     }
 
     export fn ghostty_surface_inspector(ptr: *Surface) ?*Inspector {
+        @import("../c_api_error.zig").clear();
         return ptr.initInspector() catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error initializing inspector err={}", .{err});
             return null;
         };
     }
 
     export fn ghostty_inspector_free(ptr: *Surface) void {
+        @import("../c_api_error.zig").clear();
         ptr.freeInspector();
     }
 
     export fn ghostty_inspector_set_size(ptr: *Inspector, w: u32, h: u32) void {
+        @import("../c_api_error.zig").clear();
         ptr.updateSize(w, h);
     }
 
     export fn ghostty_inspector_set_content_scale(ptr: *Inspector, x: f64, y: f64) void {
+        @import("../c_api_error.zig").clear();
         ptr.updateContentScale(x, y);
     }
 
@@ -3135,6 +3399,7 @@ pub const CAPI = struct {
         button: input.MouseButton,
         mods: c_int,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.mouseButtonCallback(
             action,
             button,
@@ -3146,6 +3411,7 @@ pub const CAPI = struct {
     }
 
     export fn ghostty_inspector_mouse_pos(ptr: *Inspector, x: f64, y: f64) void {
+        @import("../c_api_error.zig").clear();
         ptr.cursorPosCallback(x, y);
     }
 
@@ -3155,6 +3421,7 @@ pub const CAPI = struct {
         y: f64,
         scroll_mods: c_int,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.scrollCallback(
             x,
             y,
@@ -3168,6 +3435,7 @@ pub const CAPI = struct {
         key: input.Key,
         c_mods: c_int,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.keyCallback(
             action,
             key,
@@ -3176,6 +3444,7 @@ pub const CAPI = struct {
                 @truncate(@as(c_uint, @bitCast(c_mods))),
             )),
         ) catch |err| {
+            @import("../c_api_error.zig").set(err);
             log.err("error processing key event err={}", .{err});
             return;
         };
@@ -3185,10 +3454,12 @@ pub const CAPI = struct {
         ptr: *Inspector,
         str: [*:0]const u8,
     ) void {
+        @import("../c_api_error.zig").clear();
         ptr.textCallback(std.mem.sliceTo(str, 0));
     }
 
     export fn ghostty_inspector_set_focus(ptr: *Inspector, focused: bool) void {
+        @import("../c_api_error.zig").clear();
         ptr.focusCallback(focused);
     }
 
@@ -3202,6 +3473,7 @@ pub const CAPI = struct {
         app: *App,
         window: *anyopaque,
     ) void {
+        @import("../c_api_error.zig").clear();
         // This is only supported on macOS
         if (comptime builtin.target.os.tag != .macos) return;
 
@@ -3225,6 +3497,7 @@ pub const CAPI = struct {
     // Darwin-only C APIs.
     const Darwin = struct {
         export fn ghostty_surface_set_display_id(ptr: *Surface, display_id: u32) void {
+            @import("../c_api_error.zig").clear();
             const surface = &ptr.core_surface;
             _ = surface.renderer_thread.mailbox.push(
                 global.io(),
@@ -3239,13 +3512,17 @@ pub const CAPI = struct {
         /// regardless of the selected text. If coretext is not in use
         /// then this will return nothing.
         export fn ghostty_surface_quicklook_font(ptr: *Surface) ?*anyopaque {
+            @import("../c_api_error.zig").clear();
             // For non-CoreText we just return null.
             if (comptime font.options.backend != .coretext) {
                 return null;
             }
 
             // We'll need content scale so fail early if we can't get it.
-            const content_scale = ptr.getContentScale() catch return null;
+            const content_scale = ptr.getContentScale() catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return null;
+            };
 
             // Get the shared font grid. We acquire a read lock to
             // read the font face. It should not be deferred since
@@ -3255,7 +3532,10 @@ pub const CAPI = struct {
             defer grid.lock.unlockShared(global.io());
 
             const collection = &grid.resolver.collection;
-            const face = collection.getFace(.{}) catch return null;
+            const face = collection.getFace(.{}) catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return null;
+            };
 
             // We need to unscale the content scale. We apply the
             // content scale to our font stack because we are rendering
@@ -3274,7 +3554,10 @@ pub const CAPI = struct {
                 size / content_scale.y,
                 null,
                 null,
-            ) catch return null;
+            ) catch |err| {
+                @import("../c_api_error.zig").set(err);
+                return null;
+            };
 
             return copy;
         }
@@ -3288,6 +3571,7 @@ pub const CAPI = struct {
             ptr: *Surface,
             result: *Text,
         ) bool {
+            @import("../c_api_error.zig").clear();
             const surface = &ptr.core_surface;
             surface.renderer_state.mutex.lockUncancelable(global.io());
             defer surface.renderer_state.mutex.unlock(global.io());
@@ -3317,6 +3601,7 @@ pub const CAPI = struct {
         }
 
         export fn ghostty_inspector_metal_init(ptr: *Inspector, device: objc.c.id) bool {
+            @import("../c_api_error.zig").clear();
             return ptr.initMetal(.fromId(device));
         }
 
@@ -3325,16 +3610,19 @@ pub const CAPI = struct {
             command_buffer: objc.c.id,
             descriptor: objc.c.id,
         ) void {
+            @import("../c_api_error.zig").clear();
             return ptr.renderMetal(
                 .fromId(command_buffer),
                 .fromId(descriptor),
             ) catch |err| {
+                @import("../c_api_error.zig").set(err);
                 log.err("error rendering inspector err={}", .{err});
                 return;
             };
         }
 
         export fn ghostty_inspector_metal_shutdown(ptr: *Inspector) void {
+            @import("../c_api_error.zig").clear();
             if (ptr.backend) |v| {
                 v.deinit();
                 ptr.backend = null;
