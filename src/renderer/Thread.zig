@@ -763,7 +763,22 @@ const Compression = struct {
     timer: xev.Timer,
     completion: xev.Completion = .{},
     reset_completion: xev.Completion = .{},
-    activity: ?u64 = null,
+    activity: ?Activity = null,
+
+    const Activity = struct {
+        live: u64,
+        presentation: ?*terminalpkg.Terminal,
+        frozen: u64,
+
+        fn current(state: *const rendererpkg.State) Activity {
+            const frozen = state.presentation_terminal;
+            return .{
+                .live = state.terminal.compressionActivity(),
+                .presentation = frozen,
+                .frozen = if (frozen) |t| t.compressionActivity() else 0,
+            };
+        }
+    };
 
     fn init() !Compression {
         return .{ .timer = try xev.Timer.init() };
@@ -777,7 +792,6 @@ const Compression = struct {
     fn wake(self: *Compression, thread: *Thread) void {
         // If we have no compression then don't do anything.
         if (comptime !terminalpkg.compression_enabled) return;
-        if (!thread.config.scrollback_compression) return;
 
         // PageList activity, rather than a generic renderer wake, restarts the
         // idle interval. In particular, the inspector wakes the renderer every
@@ -785,8 +799,10 @@ const Compression = struct {
         // timer indefinitely.
         if (thread.state.mutex.tryLock()) {
             defer thread.state.mutex.unlock(global.io());
-            const activity = thread.state.terminal.compressionActivity();
-            if (self.activity == activity) return;
+            if (!thread.config.scrollback_compression and
+                thread.state.presentation_terminal == null) return;
+            const activity = Activity.current(thread.state);
+            if (std.meta.eql(self.activity, @as(?Activity, activity))) return;
             self.activity = activity;
         } else if (self.completion.state() == .active) {
             // Contention doesn't prove that compression-relevant activity
@@ -839,23 +855,26 @@ const Compression = struct {
     /// Try one bounded step without waiting for the terminal lock. The return
     /// value is the delay before another attempt, or null when work is done.
     fn step(self: *Compression, thread: *Thread) ?u64 {
-        if (!thread.config.scrollback_compression) return null;
-
         const state = thread.state;
         if (!state.mutex.tryLock()) return idle_interval;
         defer state.mutex.unlock(global.io());
+        if (!thread.config.scrollback_compression and
+            state.presentation_terminal == null) return null;
 
-        const activity = state.terminal.compressionActivity();
-        if (self.activity != activity) {
+        const activity = Activity.current(state);
+        if (!std.meta.eql(self.activity, @as(?Activity, activity))) {
             self.activity = activity;
             return idle_interval;
         }
 
-        return switch (state.terminal.compress(.incremental)) {
-            .pending => step_interval,
-            .unsupported,
-            .complete,
-            => null,
-        };
+        const live_pending = thread.config.scrollback_compression and
+            state.terminal.compress(.incremental) == .pending;
+        // Frozen snapshots always use compressed history. Reclaim pages that
+        // rendering restored, even when live scrollback compression is off.
+        const frozen_pending = if (state.presentation_terminal) |t|
+            t.compress(.incremental) == .pending
+        else
+            false;
+        return if (live_pending or frozen_pending) step_interval else null;
     }
 };

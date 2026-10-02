@@ -237,60 +237,20 @@ const Search = struct {
     }
 };
 
-/// Clone the complete live terminal, including scrollback, for modal search.
-/// The clone is never fed PTY bytes, so a ground stream continuation is
-/// correct even if the live parser is currently between input fragments.
+/// Capture active terminal state and independently clone compressed history.
+/// The source stays locked until every snapshot page and pin is owned.
 fn createSearchSnapshot(self: *Surface) !*terminal.Terminal {
-    var encoded: std.Io.Writer.Allocating = .init(self.alloc);
-    defer encoded.deinit();
-
-    {
-        self.renderer_state.mutex.lockUncancelable(global.io());
-        defer self.renderer_state.mutex.unlock(global.io());
-        try terminal.snapshot.encode(
-            self.alloc,
-            &encoded.writer,
-            self.renderer_state.terminal,
-            .{ .continuation = .ground },
-        );
-    }
-
-    var reader: std.Io.Reader = .fixed(encoded.written());
-    var decoded = try terminal.snapshot.decode(
-        self.alloc,
-        global.io(),
-        &reader,
-        .{ .max_continuation_bytes = 0 },
-    );
-    defer decoded.deinit(self.alloc);
-
-    // Do not expose a partial snapshot to external search. The READY section
-    // declares the complete logical history extent for each screen, so verify
-    // that every declared row was actually restored.
-    {
-        var screens = decoded.terminal.?.screens.all.iterator();
-        while (screens.next()) |entry| {
-            const expected = decoded.history_rows.get(entry.key) orelse
-                return error.IncompleteSnapshotHistory;
-            const screen = entry.value.*;
-            const actual: u64 = @intCast(
-                screen.pages.total_rows - screen.pages.rows,
-            );
-            if (actual != expected) return error.IncompleteSnapshotHistory;
-        }
-    }
-
     const result = try self.alloc.create(terminal.Terminal);
     errdefer self.alloc.destroy(result);
-    result.* = decoded.toOwned();
-
-    // Modal snapshot presentation has no live insertion cursor. This also
-    // prevents the cursor blink timer from changing the frozen frame.
-    result.modes.set(.cursor_visible, false);
-    result.flags.dirty.clear = true;
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    result.* = try terminal.PresentationSnapshot.capture(
+        self.alloc,
+        global.io(),
+        self.renderer_state.terminal,
+    );
     return result;
 }
-
 /// Enter frozen presentation mode. Repeated calls retain the current
 /// snapshot so its coordinates remain stable.
 pub fn beginPresentationSnapshot(self: *Surface) !void {

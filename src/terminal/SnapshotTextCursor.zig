@@ -55,7 +55,9 @@ pub fn next(self: *Self) !?Chunk {
         self.text.clearRetainingCapacity();
         self.points.clearRetainingCapacity();
         const start_y = page.start;
-        var f: formatter.PageFormatter = .init(page.node.page(), .{
+        var preserved = try page.node.pagePreservingState(self.alloc);
+        defer preserved.deinit();
+        var f: formatter.PageFormatter = .init(preserved.page(), .{
             .emit = .plain,
             .unwrap = true,
             .trim = false,
