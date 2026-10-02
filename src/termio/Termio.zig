@@ -465,6 +465,7 @@ pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !voi
     // state lock.
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
+    self.renderer_state.preservePresentation(.config);
 
     // Deinit our old config. We do this in the lock because the
     // stream handler may be referencing the old config (i.e. enquiry resp)
@@ -534,6 +535,7 @@ pub fn resize(
         }
 
         // Update the size of our terminal state
+        self.renderer_state.preservePresentation(.resize);
         try self.terminal.resize(
             self.alloc,
             .{
@@ -611,6 +613,7 @@ fn sizeReportLocked(self: *Termio, td: *ThreadData, style: termio.Message.SizeRe
 pub fn resetSynchronizedOutput(self: *Termio) void {
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
+    self.renderer_state.preservePresentation(.synchronized_output_timeout);
     self.terminal.modes.set(.synchronized_output, false);
     self.renderer_wakeup.notify() catch {};
 }
@@ -626,6 +629,7 @@ pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
         // knowledge of where the cursor is and causes rendering issues. So,
         // for alt screen, we do nothing.
         if (self.terminal.screens.active_key == .alternate) return;
+        self.renderer_state.preservePresentation(.clear_screen);
 
         // Clear our selection
         self.terminal.screens.active.clearSelection();
@@ -678,7 +682,7 @@ pub fn scrollViewport(
 ) void {
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
-    self.terminal.scrollViewport(scroll);
+    self.renderer_state.terminalForRender().scrollViewport(scroll);
 }
 
 /// Jump the viewport to the prompt.
@@ -686,7 +690,7 @@ pub fn jumpToPrompt(self: *Termio, delta: isize) !void {
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
-        self.terminal.screens.active.scroll(.{ .delta_prompt = delta });
+        self.renderer_state.terminalForRender().screens.active.scroll(.{ .delta_prompt = delta });
     }
 
     try self.renderer_wakeup.notify();
@@ -726,6 +730,18 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
+    if (buf.len != 0 and self.renderer_state.presentation_preserve != null) {
+        const cursor_only = isPresentationOnlyOutput(self.terminal_stream.ground(), buf);
+        if (!@import("builtin").is_test and global.logging().stderr) {
+            if (cursor_only) {
+                log.info("snapshot diagnostic skipped_capture=cursor_style output_bytes={}", .{buf.len});
+            } else {
+                log.info("snapshot diagnostic triggering_output_bytes={}", .{buf.len});
+                self.terminal_stream.handler.snapshot_diagnostic_pending = true;
+            }
+        }
+        if (!cursor_only) self.renderer_state.preservePresentation(.output);
+    }
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;
 
@@ -755,6 +771,35 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         self.terminal_stream.handler.termio_messaged = false;
         self.mailbox.notify();
     }
+}
+
+/// Cursor appearance is hidden in frozen presentation and does not affect
+/// text, coordinates, or history. Permit only complete DECSCUSR sequences
+/// from parser ground; fragmented or mixed output retains conservative capture.
+fn isPresentationOnlyOutput(ground: bool, buf: []const u8) bool {
+    if (!ground or buf.len == 0 or buf.len % 5 != 0) return false;
+    var offset: usize = 0;
+    while (offset < buf.len) : (offset += 5) {
+        const sequence = buf[offset..][0..5];
+        if (sequence[0] != 0x1b or sequence[1] != '[' or
+            sequence[2] < '0' or sequence[2] > '6' or
+            sequence[3] != ' ' or sequence[4] != 'q') return false;
+    }
+    return true;
+}
+
+test "lazy snapshot excludes cursor style but captures mixed and fragmented output" {
+    const testing = std.testing;
+    try testing.expect(isPresentationOnlyOutput(true, "\x1b[5 q"));
+    try testing.expect(isPresentationOnlyOutput(true, "\x1b[0 q\x1b[6 q"));
+    try testing.expect(!isPresentationOnlyOutput(false, "\x1b[5 q"));
+    try testing.expect(!isPresentationOnlyOutput(true, "\x1b[5 "));
+    try testing.expect(!isPresentationOnlyOutput(true, "q"));
+    try testing.expect(!isPresentationOnlyOutput(true, "\x1b[5 qhello"));
+    try testing.expect(!isPresentationOnlyOutput(true, "hello\x1b[5 q"));
+    try testing.expect(!isPresentationOnlyOutput(true, "\x1b[5 q\x1b[2J"));
+    try testing.expect(!isPresentationOnlyOutput(true, "\x1b[5 q\x1b[5H"));
+    try testing.expect(!isPresentationOnlyOutput(true, "\x1b[7 q"));
 }
 
 /// Sends a DSR response for the current color scheme to the pty.

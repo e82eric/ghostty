@@ -1316,7 +1316,8 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_text_s*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
 
-/** Capture scrollback and begin frozen snapshot presentation. */
+/** Begin frozen snapshot presentation. Borrows live scrollback until the first
+ * live mutation, capturing its original contents before that mutation. */
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
 
