@@ -32,6 +32,37 @@ const compat_fd = @import("../lib/compat/fd.zig");
 
 const log = std.log.scoped(.io_exec);
 
+fn msysTerminfoPath(alloc: Allocator, path: []const u8) ![]const u8 {
+    const drive = path.len >= 3 and std.ascii.isAlphabetic(path[0]) and
+        path[1] == ':' and (path[2] == '/' or path[2] == '\\');
+    const result = try alloc.alloc(u8, path.len);
+    if (drive) {
+        result[0] = '/';
+        result[1] = std.ascii.toLower(path[0]);
+        @memcpy(result[2..], path[2..]);
+    } else {
+        @memcpy(result, path);
+    }
+    for (result) |*char| if (char.* == '\\') {
+        char.* = '/';
+    };
+    return result;
+}
+
+test "Windows TERMINFO path supports MSYS ncurses" {
+    const cases = .{
+        .{ "C:/Program Files/Ghostty/share/terminfo", "/c/Program Files/Ghostty/share/terminfo" },
+        .{ "G:\\src\\ghostty\\share\\terminfo", "/g/src/ghostty/share/terminfo" },
+        .{ "\\\\server\\share\\terminfo", "//server/share/terminfo" },
+        .{ "/c/ghostty/share/terminfo", "/c/ghostty/share/terminfo" },
+    };
+    inline for (cases) |case| {
+        const result = try msysTerminfoPath(std.testing.allocator, case[0]);
+        defer std.testing.allocator.free(result);
+        try std.testing.expectEqualStrings(case[1], result);
+    }
+}
+
 /// The termios poll rate in milliseconds.
 const TERMIOS_POLL_MS = 200;
 
@@ -655,7 +686,12 @@ const Subprocess = struct {
             const dir = try std.fmt.bufPrint(&buf, "{s}/terminfo", .{
                 std.fs.path.dirname(base) orelse unreachable,
             });
-            try env.put("TERMINFO", dir);
+            // Git/MSYS ncurses expects an MSYS path in TERMINFO rather than
+            // a native C:/... path, even though tic accepts the latter.
+            try env.put("TERMINFO", if (comptime builtin.os.tag == .windows)
+                try msysTerminfoPath(alloc, dir)
+            else
+                dir);
         } else {
             if (comptime builtin.target.os.tag.isDarwin()) {
                 log.warn("ghostty terminfo not found, using xterm-256color", .{});

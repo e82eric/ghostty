@@ -1187,6 +1187,8 @@ GHOSTTY_API void ghostty_config_finalize(ghostty_config_t);
 // Replace explicit terminal colors with a theme before finalization.
 // Other settings are preserved; diagnostics are read after finalize.
 GHOSTTY_API bool ghostty_config_set_theme(ghostty_config_t, const char*);
+// NULL family and zero size preserve the existing setting. Before finalize.
+GHOSTTY_API bool ghostty_config_set_font(ghostty_config_t, const char*, float);
 // Callback paths are borrowed for the duration of each invocation, user directory first.
 GHOSTTY_API bool ghostty_config_theme_directories(void*, void (*)(void*, const char*));
 // For key "theme", returns the selected light/dark theme name. Borrowed until
