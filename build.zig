@@ -274,6 +274,9 @@ pub fn build(b: *std.Build) !void {
                 });
                 cargo.has_side_effects = true;
                 cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt-static");
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
@@ -320,6 +323,9 @@ pub fn build(b: *std.Build) !void {
                 });
                 cargo.has_side_effects = true;
                 cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
+                cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt");
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));

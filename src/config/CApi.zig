@@ -44,6 +44,10 @@ fn removeColorOverrides(self: *Config) void {
 fn appendTheme(self: *Config, alloc: std.mem.Allocator, name: []const u8) !void {
     const argument = try std.fmt.allocPrint(alloc, "--theme={s}", .{name});
     defer alloc.free(argument);
+    try appendArgument(self, alloc, argument);
+}
+
+fn appendArgument(self: *Config, alloc: std.mem.Allocator, argument: []const u8) !void {
     var iter = @import("../cli.zig").args.sliceIterator(&.{argument});
     const previous_len = self._replay_steps.items.len;
     try self.loadIter(alloc, &iter);
@@ -56,6 +60,43 @@ fn appendTheme(self: *Config, alloc: std.mem.Allocator, name: []const u8) !void 
             break;
         }
     }
+}
+
+/// Apply explicitly supplied font settings before finalization.
+export fn ghostty_config_set_font(self: *Config, family: ?[*:0]const u8, size: f32) bool {
+    setFont(self, global.alloc(), if (family) |value| std.mem.span(value) else null, size) catch return false;
+    return true;
+}
+
+fn setFont(self: *Config, alloc: std.mem.Allocator, family: ?[]const u8, size: f32) !void {
+    if (family) |value| {
+        if (value.len == 0 or std.mem.indexOfAny(u8, value, "\r\n") != null) return error.InvalidFont;
+        try appendArgument(self, alloc, "--font-family=");
+        const argument = try std.fmt.allocPrint(alloc, "--font-family={s}", .{value});
+        defer alloc.free(argument);
+        try appendArgument(self, alloc, argument);
+    }
+    if (size != 0) {
+        if (!std.math.isFinite(size) or size <= 0) return error.InvalidFont;
+        const argument = try std.fmt.allocPrint(alloc, "--font-size={d}", .{size});
+        defer alloc.free(argument);
+        try appendArgument(self, alloc, argument);
+    }
+}
+
+test "font reload preserves command tail and replaces font family" {
+    const alloc = std.testing.allocator;
+    var config = try Config.default(alloc);
+    defer config.deinit();
+    var iter = @import("../cli.zig").args.sliceIterator(&.{ "--font-family=old", "-e", "echo", "--font-size=99" });
+    try config.loadIter(alloc, &iter);
+    try setFont(&config, alloc, "new", 23);
+    try config.finalize();
+    try std.testing.expect(config._diagnostics.empty());
+    try std.testing.expectEqual(@as(f32, 23), config.@"font-size");
+    try std.testing.expectEqual(@as(usize, 1), config.@"font-family".list.items.len);
+    try std.testing.expectEqualStrings("new", config.@"font-family".list.items[0]);
+    try std.testing.expectEqualStrings("--font-size=99", config.@"initial-command".?.direct[1]);
 }
 
 test "theme switching replaces colors and preserves other settings" {
