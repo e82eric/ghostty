@@ -1652,6 +1652,8 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: u64,
         cursor: terminal.SnapshotTextCursor,
+        scanned_bytes: usize = 0,
+        finished: bool = false,
     };
 
     const SnapshotCell = extern struct { x: u32, y: u64 };
@@ -2039,6 +2041,7 @@ pub const CAPI = struct {
             return null;
         }
         const t = state.presentation_terminal orelse return null;
+        surface.core_surface.logPresentationMemoryLocked("text scan begin");
         const cursor = terminal.SnapshotTextCursor.init(t.screens.active, global.alloc()) catch |err| {
             @import("../c_api_error.zig").set(err);
             return null;
@@ -2070,7 +2073,13 @@ pub const CAPI = struct {
             @import("../c_api_error.zig").set(error.SnapshotExpired);
             return false;
         }
+        cursor.cursor.rebind(state.terminalForRender().screens.active) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
         cursor.cursor.reset();
+        cursor.scanned_bytes = 0;
+        cursor.finished = false;
         return true;
     }
 
@@ -2088,10 +2097,25 @@ pub const CAPI = struct {
             @import("../c_api_error.zig").set(error.SnapshotExpired);
             return -1;
         }
+        cursor.cursor.rebind(state.terminalForRender().screens.active) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return -1;
+        };
         const chunk = (cursor.cursor.next() catch |err| {
             @import("../c_api_error.zig").set(err);
             return -1;
-        }) orelse return 0;
+        }) orelse {
+            if (!cursor.finished) {
+                cursor.finished = true;
+                cursor.surface.core_surface.logPresentationMemoryLocked("text scan end");
+                log.info("snapshot diagnostic generation={} scanned_bytes={} point_buffer_bytes={}", .{
+                    cursor.generation,                                            cursor.scanned_bytes,
+                    cursor.cursor.points.capacity * @sizeOf(terminal.Coordinate),
+                });
+            }
+            return 0;
+        };
+        cursor.scanned_bytes += chunk.text.len;
         result.* = .{
             .text = chunk.text.ptr,
             .points = chunk.points.ptr,

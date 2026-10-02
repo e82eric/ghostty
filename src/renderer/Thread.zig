@@ -870,7 +870,7 @@ const Compression = struct {
         // Frozen snapshots always use compressed history. Reclaim pages that
         // rendering restored, even when live scrollback compression is off.
         const frozen_pending = if (state.presentation_terminal) |t|
-            t.compress(.incremental) == .pending
+            t != state.terminal and t.compress(.incremental) == .pending
         else
             false;
         return if (live_pending or frozen_pending) step_interval else null;

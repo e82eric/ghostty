@@ -1410,6 +1410,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     self.alloc,
                     render_terminal,
                 );
+                if (state.presentation_terminal != null) self.terminal_state.cursor.visible = false;
 
                 // If our terminal state is dirty at all we need to redo
                 // the viewport search.
