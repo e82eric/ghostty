@@ -497,8 +497,12 @@ pub fn resize(
     self.size = size;
     const grid_size = size.grid();
 
-    // Update the size of our pty.
-    try self.backend.resize(grid_size, size.terminal());
+    // Windows ConPTY may query the cursor as a consequence of resizing.
+    // Its reader runs independently, so finish reflow before notifying it.
+    // Keep the existing PTY notification order on other platforms.
+    if (comptime @import("builtin").os.tag != .windows) {
+        try self.backend.resize(grid_size, size.terminal());
+    }
 
     // Enter the critical area that we want to keep small
     {
@@ -518,7 +522,27 @@ pub fn resize(
             },
         );
 
-        // If we have size reporting enabled we need to send a report.
+        if (!@import("builtin").is_test and global.logging().stderr) {
+            log.info("resize diagnostic reflow_complete rows={} cols={} cursor_row={} cursor_col={}", .{
+                grid_size.rows,                            grid_size.columns,
+                self.terminal.screens.active.cursor.y + 1, self.terminal.screens.active.cursor.x + 1,
+            });
+        }
+    }
+
+    // Do not hold the terminal lock across the backend call: output parsing
+    // must remain able to make progress while ConPTY handles its signal pipe.
+    if (comptime @import("builtin").os.tag == .windows) {
+        try self.backend.resize(grid_size, size.terminal());
+        if (!@import("builtin").is_test and global.logging().stderr) {
+            log.info("resize diagnostic conpty_notified rows={} cols={}", .{ grid_size.rows, grid_size.columns });
+        }
+    }
+
+    // Report only after both the terminal and backend have been resized.
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
         if (self.terminal.modes.get(.in_band_size_reports)) {
             try self.sizeReportLocked(td, .mode_2048);
         }

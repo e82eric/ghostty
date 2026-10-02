@@ -842,6 +842,12 @@ pub const StreamHandler = struct {
                 });
                 msg.write_small.len = @intCast(resp.len);
 
+                if (!@import("builtin").is_test and global.logging().stderr) {
+                    log.info("resize diagnostic cursor_report rows={} cols={} cursor_row={} cursor_col={}", .{
+                        self.terminal.rows, self.terminal.cols, pos.y + 1, pos.x + 1,
+                    });
+                }
+
                 self.messageWriter(msg);
             },
 
