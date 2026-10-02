@@ -56,6 +56,7 @@ pub const SelectionGesture = @import("SelectionGesture.zig");
 pub const SizeReportStyle = csi.SizeReportStyle;
 pub const StringMap = @import("StringMap.zig");
 pub const SnapshotTextCursor = @import("SnapshotTextCursor.zig");
+pub const PresentationSnapshot = @import("PresentationSnapshot.zig");
 pub const Style = style.Style;
 pub const Terminal = @import("Terminal.zig");
 pub const TerminalStream = stream_terminal.Stream;

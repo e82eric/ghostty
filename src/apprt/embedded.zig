@@ -1795,7 +1795,14 @@ pub const CAPI = struct {
         };
         const screen = t.screens.active;
         var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
-        if (pin.rowAndCell().cell.wide == .spacer_tail) {
+        var preserved = pin.node.pagePreservingState(global.alloc()) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
+        defer preserved.deinit();
+        const page = preserved.page();
+        const row = &page.rows.ptr(page.memory)[pin.y];
+        if (page.getCells(row)[pin.x].wide == .spacer_tail) {
             if (snap_right and pin.x + 1 < pin.node.cols()) {
                 pin.x += 1;
             } else if (pin.x > 0) {
@@ -2124,11 +2131,16 @@ pub const CAPI = struct {
         const pin = snapshotCellPin(screen, .{ .x = 0, .y = row }, anchor) orelse return false;
         surface.core_surface.snapshot_text_row_anchor = .{ .pin = pin, .row = row };
         const alloc = global.alloc();
+        var preserved = pin.node.pagePreservingState(alloc) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
+        defer preserved.deinit();
         var text_writer: std.Io.Writer.Allocating = .init(alloc);
         defer text_writer.deinit();
         var points: std.ArrayList(terminal.Coordinate) = .empty;
         defer points.deinit(alloc);
-        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(pin.node.page(), .{
+        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(preserved.page(), .{
             .emit = .plain,
             .unwrap = false,
             .trim = false,
@@ -2156,7 +2168,7 @@ pub const CAPI = struct {
             .text = text_copy.ptr,
             .columns = columns.ptr,
             .len = written.len,
-            .wraps_to_next = pin.rowAndCell().row.wrap,
+            .wraps_to_next = preserved.page().rows.ptr(preserved.page().memory)[pin.y].wrap,
         };
         return true;
     }
