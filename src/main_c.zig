@@ -263,14 +263,20 @@ pub const DllMain = if (builtin.os.tag == .windows) struct {
     const __vcrt_uninitialize = @extern(*const fn (c_int) callconv(.c) c_int, .{ .name = "__vcrt_uninitialize" });
     const __acrt_initialize = @extern(*const fn () callconv(.c) c_int, .{ .name = "__acrt_initialize" });
     const __acrt_uninitialize = @extern(*const fn (c_int) callconv(.c) c_int, .{ .name = "__acrt_uninitialize" });
+    const __scrt_initialize_onexit_tables = @extern(*const fn (c_int) callconv(.c) bool, .{ .name = "__scrt_initialize_onexit_tables" });
 
     pub fn handler(_: HINSTANCE, fdwReason: DWORD, _: LPVOID) callconv(.winapi) BOOL {
         // Only MSVC needs to bootstrap the CRT; MinGW handles it via dllcrt2.obj.
         if (builtin.abi != .msvc) return TRUE;
         switch (fdwReason) {
             DLL_PROCESS_ATTACH => {
-                if (__vcrt_initialize() < 0) return FALSE;
-                if (__acrt_initialize() < 0) return FALSE;
+                if (__vcrt_initialize() == 0) return FALSE;
+                if (__acrt_initialize() == 0) return FALSE;
+                // MSVC startup normally initializes its module-local encoded
+                // atexit tables. Zig's DLL entry point skips that step. Without
+                // it, glslang's first thread-local destructor registration
+                // treats an encoded-null pointer as a heap allocation.
+                if (!__scrt_initialize_onexit_tables(0)) return FALSE; // dll
                 return TRUE;
             },
             DLL_PROCESS_DETACH => {
