@@ -386,6 +386,7 @@ pub const Platform = union(PlatformTag) {
     ios: IOS,
     windows: extern struct { hwnd: *anyopaque },
     opengl: OpenGL,
+    wgpu: extern struct { window: ?*anyopaque, driver: *const @import("../renderer/Vulkan.zig").Driver },
 
     pub const OpenGL = extern struct {
         window: ?*anyopaque,
@@ -451,6 +452,10 @@ pub const Platform = union(PlatformTag) {
                 .display = c_platform.opengl.display,
                 .context = c_platform.opengl.context orelse return error.OpenGLContextMustBeSet,
             } },
+            .wgpu => .{ .wgpu = .{
+                .window = c_platform.opengl.window,
+                .driver = @ptrCast(@alignCast(c_platform.opengl.context orelse return error.VulkanHostRequired)),
+            } },
         };
     }
 };
@@ -463,6 +468,7 @@ pub const PlatformTag = enum(c_int) {
     ios = 2,
     windows = 3,
     opengl = 4,
+    wgpu = 5,
 };
 
 pub const EnvVar = extern struct {
@@ -1572,6 +1578,13 @@ pub const CAPI = struct {
     const GLFrameDescription = extern struct {
         handle: ?*GLFrame,
         texture: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
+    };
+    const GPUFrameDescription = extern struct {
+        handle: ?*GLFrame,
+        texture: usize,
         width: u32,
         height: u32,
         generation: u64,
@@ -2937,7 +2950,7 @@ pub const CAPI = struct {
         result: *GLFrameDescription,
     ) bool {
         @import("../c_api_error.zig").clear();
-        if (comptime renderer.Renderer.ExportedFrame == void) return false;
+        if (comptime renderer.Renderer.ExportedFrame == void or @import("../build_config.zig").renderer != .opengl) return false;
 
         const frame = surface.core_surface.renderer.takeFrame() orelse return false;
         const texture = switch (frame) {
@@ -2972,6 +2985,21 @@ pub const CAPI = struct {
             frame.frame.deinit();
             alloc.destroy(frame);
         }
+    }
+
+    export fn ghostty_surface_take_gpu_frame(surface: *Surface, result: *GPUFrameDescription) bool {
+        @import("../c_api_error.zig").clear();
+        if (comptime @import("../build_config.zig").renderer != .vulkan) return false;
+        const frame = surface.core_surface.renderer.takeFrame() orelse return false;
+        const alloc = surface.app.core_app.alloc;
+        const owned = alloc.create(GLFrame) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            frame.deinit();
+            return false;
+        };
+        owned.* = .{ .alloc = alloc, .frame = frame };
+        result.* = .{ .handle = owned, .texture = frame.texture.resource.handle, .width = frame.texture.width, .height = frame.texture.height, .generation = frame.texture.generation };
+        return true;
     }
 
     /// Update the size of a surface. This will trigger resize notifications

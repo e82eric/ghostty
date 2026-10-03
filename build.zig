@@ -284,7 +284,7 @@ pub fn build(b: *std.Build) !void {
                 // the internal library's installed filename.
                 sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
 
-                const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                const egui_step = b.step("egui-sample", "Build the egui terminal sample");
                 egui_step.dependOn(&conpty.step);
                 resources.addStepDependencies(egui_step);
                 const cargo = b.addSystemCommand(&.{
@@ -297,6 +297,7 @@ pub fn build(b: *std.Build) !void {
                     b.pathFromRoot(".zig-cache/egui-target"),
                 });
                 cargo.has_side_effects = true;
+                if (config.renderer == .vulkan) cargo.addArgs(&.{ "--features", "vulkan" });
                 cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
                 cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
                 cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
@@ -334,7 +335,7 @@ pub fn build(b: *std.Build) !void {
                 );
                 b.getInstallStep().dependOn(&public_lib_install.step);
 
-                const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                const egui_step = b.step("egui-sample", "Build the egui terminal sample");
                 resources.addStepDependencies(egui_step);
                 const cargo = b.addSystemCommand(&.{
                     "cargo",
@@ -350,6 +351,7 @@ pub fn build(b: *std.Build) !void {
                 cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
                 cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
                 cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt");
+                if (config.renderer == .vulkan) cargo.addArgs(&.{ "--features", "vulkan" });
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
                 cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));

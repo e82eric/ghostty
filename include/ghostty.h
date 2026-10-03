@@ -73,6 +73,7 @@ typedef enum {
   GHOSTTY_PLATFORM_IOS,
   GHOSTTY_PLATFORM_WINDOWS,
   GHOSTTY_PLATFORM_OPENGL,
+  GHOSTTY_PLATFORM_WGPU,
 } ghostty_platform_e;
 
 typedef enum {
@@ -520,6 +521,27 @@ typedef struct {
   uint32_t height;
   uint64_t generation;
 } ghostty_gl_frame_s;
+
+// Experimental embedded Vulkan host ABI. Dispatch is synchronous; the host
+// device and table must outlive all surfaces and exported frame leases.
+// For GHOSTTY_PLATFORM_WGPU, platform.opengl.context points to this table,
+// platform.opengl.window is the optional native window, and display is NULL.
+// Version 1 uses 12 uintptr_t arguments. A zero return signals failure.
+// Operations: 0 release; 1 create buffer; 2 write buffer; 3 create texture;
+// 4 write texture; 5 begin frame; 6 draw; 7 submit/export frame; 8 pipeline.
+// See renderer/Vulkan.zig for argument layouts. Texture handles are opaque
+// host-owned resources, not Vulkan VkImage handles or OpenGL texture IDs.
+typedef struct {
+  uint32_t version;
+  void* context;
+  uintptr_t (*call)(void*, uint32_t, const uintptr_t (*)[12]);
+} ghostty_wgpu_driver_s;
+typedef struct {
+  ghostty_gl_frame_t handle;
+  uintptr_t texture;
+  uint32_t width, height;
+  uint64_t generation;
+} ghostty_gpu_frame_s;
 
 typedef enum {
   GHOSTTY_SURFACE_CONTEXT_WINDOW = 0,
@@ -1236,6 +1258,9 @@ GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_take_gl_frame(ghostty_surface_t,
                                                   ghostty_gl_frame_s*);
 GHOSTTY_API void ghostty_gl_frame_release(ghostty_gl_frame_t);
+// Takes the newest Vulkan frame lease. Release with ghostty_gl_frame_release
+// before destroying its surface, after submitting all reads on the host queue.
+GHOSTTY_API bool ghostty_surface_take_gpu_frame(ghostty_surface_t, ghostty_gpu_frame_s*);
 GHOSTTY_API void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
