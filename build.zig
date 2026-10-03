@@ -231,6 +231,28 @@ pub fn build(b: *std.Build) !void {
         if (!config.target.result.os.tag.isDarwin()) {
             lib_shared.installHeader(); // Only need one header
             if (config.target.result.os.tag == .windows) {
+                const conpty_arch = switch (config.target.result.cpu.arch) {
+                    .x86_64 => "x64",
+                    .x86 => "x86",
+                    .aarch64 => "arm64",
+                    else => return error.UnsupportedConPtyArchitecture,
+                };
+                const conpty = b.addSystemCommand(&.{
+                    if (builtin.os.tag == .windows) "powershell.exe" else "pwsh",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    b.pathFromRoot("example/rust-egui-terminal/conpty.ps1"),
+                    "-Architecture",
+                    conpty_arch,
+                    "-Destination",
+                    b.getInstallPath(.bin, ""),
+                });
+                conpty.has_side_effects = true;
+                const conpty_step = b.step("conpty", "Install the pinned Windows ConPTY DLL and console host");
+                conpty_step.dependOn(&conpty.step);
+                b.getInstallStep().dependOn(&conpty.step);
                 lib_shared.install("ghostty-internal.dll");
                 lib_static.install("ghostty-internal-static.lib");
                 const import_lib_install = b.addInstallFileWithDir(
@@ -256,12 +278,14 @@ pub fn build(b: *std.Build) !void {
                 sample.root_module.linkSystemLibrary("user32", .{});
                 sample.root_module.linkSystemLibrary("gdi32", .{});
                 const sample_step = b.step("win32-sample", "Build the native Win32 OpenGL terminal sample");
+                sample_step.dependOn(&conpty.step);
                 sample_step.dependOn(&b.addInstallArtifact(sample, .{}).step);
                 // The import library records ghostty.dll, irrespective of
                 // the internal library's installed filename.
                 sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
 
                 const egui_step = b.step("egui-sample", "Build the egui OpenGL terminal sample");
+                egui_step.dependOn(&conpty.step);
                 resources.addStepDependencies(egui_step);
                 const cargo = b.addSystemCommand(&.{
                     "cargo",
