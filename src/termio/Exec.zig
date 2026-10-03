@@ -96,6 +96,13 @@ pub fn deinit(self: *Exec) void {
 /// after termio begins because it may put the internal terminal state
 /// into a bad state.
 pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
+    // ConPTY maintains only the active screen, without our scrollback.
+    // Keep its viewport contents and cursor coordinates aligned when growing
+    // the grid: add blank rows below instead of pulling history into view.
+    if (comptime builtin.os.tag == .windows) {
+        term.flags.resize_pull_scrollback = false;
+    }
+
     // If we have an initial pwd requested by the subprocess, then we
     // set that on the terminal now. This allows rapidly initializing
     // new surfaces to use the proper pwd.
