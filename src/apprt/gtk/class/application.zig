@@ -803,7 +803,6 @@ pub const Application = extern struct {
             .search_total => Action.searchTotal(target, value),
             .search_selected => Action.searchSelected(target, value),
 
-            .application_protocol => return false,
             // Unimplemented
             .secure_input,
             .close_all_windows,

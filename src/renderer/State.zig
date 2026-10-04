@@ -19,19 +19,11 @@ mutex: *std.Io.Mutex,
 /// The terminal data.
 terminal: *terminalpkg.Terminal,
 
-/// Optional terminal used for frozen presentation. It initially aliases the
-/// live terminal; the preserve hook replaces it before live changes. Used by modal
+/// Independently owned terminal used for frozen presentation. Used by modal
 /// interfaces such as scrollback search that require stable contents and
 /// coordinates while still allowing the child process to make progress.
 /// Access is protected by `mutex`, just like `terminal`.
 presentation_terminal: ?*terminalpkg.Terminal = null,
-
-/// Armed only while presentation borrows the live terminal. Called with the
-/// terminal mutex held, before a batch of live mutations begins.
-presentation_preserve: ?struct {
-    context: *anyopaque,
-    callback: *const fn (*anyopaque, PresentationMutation) void,
-} = null,
 
 /// The terminal inspector, if any. This will be null while the inspector
 /// is not active and will be set when it is active.
@@ -61,25 +53,6 @@ handoff_gen: std.atomic.Value(u32) = .init(0),
 /// The terminal the renderer should currently present.
 pub inline fn terminalForRender(self: *const State) *terminalpkg.Terminal {
     return self.presentation_terminal orelse self.terminal;
-}
-
-pub const PresentationMutation = enum {
-    output,
-    resize,
-    config,
-    synchronized_output_timeout,
-    clear_screen,
-    reset,
-    child_exit,
-    password_input,
-    parser_lock_handoff,
-    test_mutation,
-};
-
-pub inline fn preservePresentation(self: *State, reason: PresentationMutation) void {
-    // A full mailbox can force the callback to release the mutex. A new
-    // session may be armed during that handoff, so check again on return.
-    while (self.presentation_preserve) |hook| hook.callback(hook.context, reason);
 }
 
 /// How long `yieldToDemand` sleeps waiting for a demanding waiter to

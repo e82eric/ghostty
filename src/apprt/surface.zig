@@ -133,7 +133,6 @@ pub const Message = union(enum) {
 
     /// The terminal has reported a change in the working directory.
     pwd_change: WriteReq,
-    application_protocol: WriteReq,
 
     /// The terminal encountered a bell character.
     ring_bell,

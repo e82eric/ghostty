@@ -778,7 +778,6 @@ pub const Handler = struct {
             .size_report => self.reportSize(value),
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
-            .application_protocol => {},
             .progress_report => self.progressReport(value),
             .program_status => self.programStatus(value),
             .resize_window => self.resizeWindow(value),

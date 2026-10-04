@@ -944,10 +944,7 @@ pub const PageListFormatter = struct {
             assert(chunk.start < chunk.end);
             assert(chunk.end > 0);
 
-            var preserved = chunk.node.pagePreservingState(self.list.pool.alloc) catch
-                return error.WriteFailed;
-            defer preserved.deinit();
-            var formatter: PageFormatter = .init(preserved.page(), self.opts);
+            var formatter: PageFormatter = .init(chunk.node.page(), self.opts);
             formatter.start_y = chunk.start;
             formatter.end_y = chunk.end - 1;
             formatter.trailing_state = page_state;

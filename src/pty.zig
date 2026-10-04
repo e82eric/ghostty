@@ -37,6 +37,9 @@ pub const Mode = packed struct {
 };
 
 pub const ProcessInfo = enum {
+    /// PID of the original shell launched for this surface.
+    shell_pid,
+    shell_creation_time,
     /// The PID of the process that controls the PTY.
     foreground_pid,
     /// Gets the name of the slave PTY. Returned name points to an internal buffer
@@ -45,7 +48,7 @@ pub const ProcessInfo = enum {
 
     pub fn Type(comptime info: ProcessInfo) type {
         return switch (info) {
-            .foreground_pid => u64,
+            .foreground_pid, .shell_pid, .shell_creation_time => u64,
             .tty_name => [:0]const u8,
         };
     }
@@ -270,6 +273,7 @@ const PosixPty = struct {
     /// is not available on a particular platform.
     pub fn getProcessInfo(self: *PosixPty, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
         return switch (info) {
+            .shell_pid, .shell_creation_time => null,
             .foreground_pid => {
                 switch (builtin.os.tag) {
                     .linux => {

@@ -4,7 +4,6 @@ const WasmTarget = @import("../os/wasm/target.zig").Target;
 /// Possible implementations, used for build options.
 pub const Backend = enum {
     opengl,
-    vulkan,
     metal,
 
     pub fn default(

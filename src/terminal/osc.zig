@@ -178,8 +178,6 @@ pub const Command = union(Key) {
     /// terminal supports the protocol. See `ProgramStatus`.
     program_status: ProgramStatus,
 
-    application_protocol: []const u8,
-
     pub const SemanticPrompt = parsers.semantic_prompt.Command;
     pub const HierarchicalContext = parsers.hierarchical_context.Command;
 
@@ -224,7 +222,6 @@ pub const Command = union(Key) {
             "kitty_desktop_notification",
             "unknown",
             "program_status",
-            "application_protocol",
         },
     );
 
@@ -490,9 +487,6 @@ pub const Parser = struct {
         @"777",
         @"1337",
         @"5522",
-        @"90",
-        @"900",
-        @"9001",
     };
 
     pub fn init(alloc: ?Allocator) Parser {
@@ -562,7 +556,6 @@ pub const Parser = struct {
             .hierarchical_context,
             .unknown,
             .program_status,
-            .application_protocol,
             => {},
         }
 
@@ -1054,27 +1047,9 @@ pub const Parser = struct {
             => switch (c) {
                 ';' => self.captureTrailing(.fixed),
                 '9' => self.state = .@"99",
-                '0' => self.state = .@"90",
                 else => self.unknownOrInvalid(c),
             },
 
-            .@"90" => switch (c) {
-                '0' => self.state = .@"900",
-                else => self.unknownOrInvalid(c),
-            },
-            .@"900" => switch (c) {
-                '1' => self.state = .@"9001",
-                else => self.unknownOrInvalid(c),
-            },
-            .@"9001" => switch (c) {
-                ';' => {
-                    self.captureTrailing(.allocating);
-                    if (self.capture) |*capture| {
-                        capture.max_bytes = @min(capture.max_bytes, 1024 * 1024);
-                    }
-                },
-                else => self.unknownOrInvalid(c),
-            },
             .@"99",
             => switch (c) {
                 // OSC 99 encoded payloads can exceed the fixed buffer.
@@ -1209,12 +1184,6 @@ pub const Parser = struct {
             .@"1337" => parsers.iterm2.parse(self, terminator_ch),
 
             .@"5522" => parsers.kitty_clipboard_protocol.parse(self, terminator_ch),
-            .@"90", .@"900" => null,
-            .@"9001" => blk: {
-                const cap = if (self.capture) |*c| c else break :blk null;
-                self.command = .{ .application_protocol = cap.trailing() };
-                break :blk &self.command;
-            },
         };
     }
 };
@@ -1269,23 +1238,6 @@ test "Parser allocating captures have a hard limit" {
         try testing.expectEqual(@as(usize, limit), cap.trailing().len);
         try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
     }
-}
-
-test "OSC 9001 accepts large picker requests within its one MiB limit" {
-    const testing = std.testing;
-    const limit = 1024 * 1024;
-    const payload = try testing.allocator.alloc(u8, limit);
-    defer testing.allocator.free(payload);
-    @memset(payload, 'a');
-
-    var p: Parser = .init(testing.allocator);
-    defer p.deinit();
-    p.nextSlice("9001;");
-    p.nextSlice(payload);
-    try testing.expectEqual(limit, p.capture.?.trailing().len);
-    try testing.expect(p.state != .invalid);
-    p.next('a');
-    try testing.expectEqual(Parser.State.invalid, p.state);
 }
 
 test "Parser nextSlice allocating captures have a hard limit" {
