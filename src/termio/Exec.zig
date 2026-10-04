@@ -634,6 +634,8 @@ const Subprocess = struct {
     screen_size: renderer.ScreenSize,
     pty: ?Pty = null,
     process: ?Process = null,
+    original_pid: std.atomic.Value(u64) = .init(0),
+    original_created: std.atomic.Value(u64) = .init(0),
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -1124,6 +1126,23 @@ const Subprocess = struct {
         log.info("started subcommand path={s} pid={?}", .{ self.args[0], cmd.pid });
 
         self.process = .{ .fork_exec = cmd };
+        if (cmd.pid) |pid| {
+            const original_pid: u64 = if (builtin.os.tag == .windows) blk: {
+                const Api = struct {
+                    extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) u32;
+                    extern "kernel32" fn GetProcessTimes(std.os.windows.HANDLE, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME) callconv(.winapi) i32;
+                };
+                var created: std.os.windows.FILETIME = undefined;
+                var exited: std.os.windows.FILETIME = undefined;
+                var kernel: std.os.windows.FILETIME = undefined;
+                var user: std.os.windows.FILETIME = undefined;
+                if (Api.GetProcessTimes(pid, &created, &exited, &kernel, &user) != 0) {
+                    self.original_created.store((@as(u64, created.dwHighDateTime) << 32) | created.dwLowDateTime, .release);
+                }
+                break :blk Api.GetProcessId(pid);
+            } else @intCast(pid);
+            self.original_pid.store(original_pid, .release);
+        }
         return switch (builtin.os.tag) {
             .windows => .{
                 .read = pty.out_pipe,
@@ -1304,6 +1323,14 @@ const Subprocess = struct {
     /// Returns `null` if there was an error getting the information or the
     /// information is not available on a particular platform.
     pub fn getProcessInfo(self: *Subprocess, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
+        if (info == .shell_pid) {
+            const pid = self.original_pid.load(.acquire);
+            return if (pid == 0) null else pid;
+        }
+        if (info == .shell_creation_time) {
+            const created = self.original_created.load(.acquire);
+            return if (created == 0) null else created;
+        }
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }
@@ -1317,7 +1344,7 @@ const Subprocess = struct {
 ///   io-reader:  hand each filled buffer to processOutput (terminal
 ///               lock, VT parse, state update, render scheduling).
 ///
-/// This used to be a single serial loop:
+/// This used to be a single serial loop (and still is on Windows):
 ///
 ///   while (true) { blocking_read(); exit_if_eof(); process(); }
 ///
@@ -1831,158 +1858,43 @@ pub const ReadThread = struct {
         };
         defer crash.sentry.thread_state = null;
 
-        // Drain ConPTY on a gather thread while this thread parses the
-        // preceding batch. This prevents terminal updates from temporarily
-        // backpressuring a saturated child process.
-        var pipeline: Pipeline = .{};
-        const gather_thread = std.Thread.spawn(
-            .{},
-            gatherMainWindows,
-            .{ fd, quit, &pipeline },
-        ) catch |err| {
-            log.err("read thread exiting, failed to spawn Windows gather thread err={}", .{err});
-            return;
-        };
-        defer gather_thread.join();
-        gather_thread.setName(global.io(), "io-gather") catch {};
-
+        var buf: [1024]u8 = undefined;
         while (true) {
-            const batch: []const u8 = batch: {
-                pipeline.mutex.lockUncancelable(global.io());
-                defer pipeline.mutex.unlock(global.io());
-                while (pipeline.count == 0) {
-                    if (pipeline.done) return;
-                    pipeline.batch_ready.waitUncancelable(global.io(), &pipeline.mutex);
-                }
-                const slot = pipeline.tail;
-                break :batch pipeline.bufs[slot][0..pipeline.lens[slot]];
-            };
-
-            io.processOutput(batch);
-
-            pipeline.mutex.lockUncancelable(global.io());
-            pipeline.tail = (pipeline.tail + 1) % buffer_count;
-            pipeline.count -= 1;
-            pipeline.mutex.unlock(global.io());
-            pipeline.slot_free.signal(global.io());
-
-            // Hand the renderer state mutex off if a snapshot is waiting.
-            io.renderer_state.yieldToDemand(global.io());
-        }
-    }
-
-    /// Continuously drain ConPTY into the shared ring. After the first blocking
-    /// read, consume queued bytes into the same batch. Saturated streams bridge
-    /// short refill gaps within a bounded budget; interactive writes publish
-    /// immediately.
-    fn gatherMainWindows(fd: posix.fd_t, quit: posix.fd_t, pipeline: *Pipeline) void {
-        defer {
-            pipeline.mutex.lockUncancelable(global.io());
-            pipeline.done = true;
-            pipeline.mutex.unlock(global.io());
-            pipeline.batch_ready.signal(global.io());
-        }
-
-        while (true) {
-            if (windowsQuitRequested(quit)) return;
-
-            const slot = slot: {
-                pipeline.mutex.lockUncancelable(global.io());
-                defer pipeline.mutex.unlock(global.io());
-                while (pipeline.count == buffer_count)
-                    pipeline.slot_free.waitUncancelable(global.io(), &pipeline.mutex);
-                break :slot pipeline.head;
-            };
-
-            const buf = &pipeline.bufs[slot];
-            var total: usize = 0;
-            const batch_start: std.Io.Timestamp = .now(global.io(), .awake);
-            while (total < buf.len) {
-                // Only the first read may block. Subsequent reads are guarded
-                // by PeekNamedPipe and drain data that is already available.
-                if (total > 0) {
-                    var available: windows.DWORD = 0;
-                    if (windows.exp.kernel32.PeekNamedPipe(
-                        fd,
-                        null,
-                        0,
-                        null,
-                        &available,
-                        null,
-                    ) == windows.FALSE) {
-                        const err = windows.GetLastError();
-                        switch (err) {
-                            .BROKEN_PIPE, .PIPE_NOT_CONNECTED, .OPERATION_ABORTED => return,
-                            else => {
-                                log.err("io gather peek error err={}", .{err});
-                                return;
-                            },
-                        }
-                    }
-                    if (available == 0) {
-                        // Bridge a saturated producer's short refill gaps for
-                        // at most the POSIX gatherer's three-millisecond
-                        // budget. Small interactive writes publish at once.
-                        if (total < bridge_threshold or
-                            batch_start.untilNow(global.io(), .awake).nanoseconds >= gather_budget_ns)
-                        {
-                            break;
-                        }
-                        for (0..bridge_spin_max) |_| std.atomic.spinLoopHint();
-                        std.Thread.yield() catch {};
-                        if (windowsQuitRequested(quit)) return;
-                        continue;
-                    }
-                }
-
+            while (true) {
                 var n: windows.DWORD = 0;
-                if (windows.exp.kernel32.ReadFile(
-                    fd,
-                    buf[total..].ptr,
-                    @intCast(buf.len - total),
-                    &n,
-                    null,
-                ) == windows.FALSE) {
+                if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
                     const err = windows.GetLastError();
                     switch (err) {
-                        .BROKEN_PIPE, .PIPE_NOT_CONNECTED, .OPERATION_ABORTED => return,
+                        // Check for a quit signal
+                        .OPERATION_ABORTED => break,
+
                         else => {
-                            log.err("io gather read error err={}", .{err});
-                            return;
+                            log.err("io reader error err={}", .{err});
+                            unreachable;
                         },
                     }
                 }
-                if (n == 0) return;
-                total += n;
+
+                @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
+
+                // See threadMainPosix: hand the renderer state mutex
+                // off if the renderer is waiting, since this loop
+                // would otherwise starve it under heavy output.
+                io.renderer_state.yieldToDemand(global.io());
             }
 
-            pipeline.mutex.lockUncancelable(global.io());
-            pipeline.lens[slot] = total;
-            pipeline.head = (pipeline.head + 1) % buffer_count;
-            pipeline.count += 1;
-            pipeline.mutex.unlock(global.io());
-            pipeline.batch_ready.signal(global.io());
-        }
-    }
-
-    fn windowsQuitRequested(quit: posix.fd_t) bool {
-        var available: windows.DWORD = 0;
-        if (windows.exp.kernel32.PeekNamedPipe(
-            quit,
-            null,
-            0,
-            null,
-            &available,
-            null,
-        ) == windows.FALSE) {
-            const err = windows.GetLastError();
-            switch (err) {
-                .BROKEN_PIPE, .PIPE_NOT_CONNECTED => return true,
-                else => log.warn("quit pipe peek failed err={}", .{err}),
+            var quit_bytes: windows.DWORD = 0;
+            if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == windows.FALSE) {
+                const err = windows.GetLastError();
+                log.err("quit pipe reader error err={}", .{err});
+                unreachable;
             }
-            return true;
+
+            if (quit_bytes > 0) {
+                log.info("read thread got quit signal", .{});
+                return;
+            }
         }
-        return available > 0;
     }
 };
 

@@ -34,10 +34,6 @@ pub const StreamHandler = struct {
     /// The shared render state
     renderer_state: *renderer.State,
 
-    /// Trace the first parsed action in an output-triggered capture. Never
-    /// include printed text, clipboard contents, titles, or other payloads.
-    snapshot_diagnostic_pending: bool = false,
-
     /// The mailbox for notifying the renderer of things.
     renderer_mailbox: *renderer.Thread.Mailbox,
 
@@ -139,18 +135,13 @@ pub const StreamHandler = struct {
         // we may have to do this.
         if (self.surface_mailbox.push(msg, .{ .instant = {} }) == 0) {
             self.renderer_state.mutex.unlock(global.io());
-            defer {
-                self.renderer_state.mutex.lockUncancelable(global.io());
-                self.renderer_state.preservePresentation(.parser_lock_handoff);
-            }
+            defer self.renderer_state.mutex.lockUncancelable(global.io());
             _ = self.surface_mailbox.push(msg, .{ .forever = {} });
         }
     }
 
     inline fn messageWriter(self: *StreamHandler, msg: termio.Message) void {
         self.termio_mailbox.send(msg, self.renderer_state.mutex);
-        // Sending may temporarily release the lock when the queue is full.
-        self.renderer_state.preservePresentation(.parser_lock_handoff);
         self.termio_messaged = true;
     }
 
@@ -173,10 +164,7 @@ pub const StreamHandler = struct {
         // wake up the renderer to allow it to process the message,
         // and then try again.
         self.renderer_state.mutex.unlock(global.io());
-        defer {
-            self.renderer_state.mutex.lockUncancelable(global.io());
-            self.renderer_state.preservePresentation(.parser_lock_handoff);
-        }
+        defer self.renderer_state.mutex.lockUncancelable(global.io());
         self.renderer_wakeup.notify() catch |err| {
             // This is an EXTREMELY unlikely case. We still don't return
             // and attempt to send the message because its most likely
@@ -204,19 +192,6 @@ pub const StreamHandler = struct {
         comptime action: Stream.Action.Tag,
         value: Stream.Action.Value(action),
     ) !void {
-        if (self.snapshot_diagnostic_pending) {
-            self.snapshot_diagnostic_pending = false;
-            switch (action) {
-                .set_mode, .reset_mode => log.info("snapshot diagnostic first_output_action={s} mode={s} previous={} requested={}", .{
-                    @tagName(action), @tagName(value.mode), self.terminal.modes.get(value.mode), action == .set_mode,
-                }),
-                .cursor_pos => log.info("snapshot diagnostic first_output_action=cursor_pos previous_row={} previous_col={} requested_row={} requested_col={}", .{
-                    self.terminal.screens.active.cursor.y + 1, self.terminal.screens.active.cursor.x + 1, value.row, value.col,
-                }),
-                .cursor_style => log.info("snapshot diagnostic first_output_action=cursor_style requested={any}", .{value}),
-                else => log.info("snapshot diagnostic first_output_action={s}", .{@tagName(action)}),
-            }
-        }
         // The branch hints here are based on real world data
         // which indicates that the most common actions are:
         //
@@ -360,7 +335,6 @@ pub const StreamHandler = struct {
             .decaln => try self.decaln(),
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
-            .application_protocol => self.surfaceMessageWriter(.{ .application_protocol = try apprt.surface.Message.WriteReq.init(self.alloc, value.bytes) }),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
             .progress_report => self.progressReport(value),
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),

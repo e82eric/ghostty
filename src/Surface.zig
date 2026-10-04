@@ -178,16 +178,8 @@ command_timer: ?std.Io.Timestamp = null,
 /// Search state
 search: ?Search = null,
 
-/// Frozen terminal used for modal presentation, independently of built-in
-/// search. Initially aliases the live terminal; owned after its first change.
+/// Independently owned frozen terminal used for modal presentation.
 presentation_snapshot: ?*terminal.Terminal = null,
-/// While borrowing, navigation may move the live viewport. Restore its
-/// original position before resuming live output or leaving the mode.
-presentation_live_viewport: ?struct {
-    mode: terminal.PageList.Viewport,
-    pin: terminal.PageList.Pin,
-    row_offset: ?usize,
-} = null,
 presentation_snapshot_generation: u64 = 0,
 snapshot_decoration_viewport: ?SnapshotViewport = null,
 /// Last physical row read from the frozen snapshot, for nearby text queries.
@@ -237,7 +229,7 @@ const Search = struct {
     }
 };
 
-/// Capture independently owned compressed pages while holding the terminal lock.
+/// Capture an independently owned terminal while holding the terminal lock.
 fn createSearchSnapshotLocked(self: *Surface) !*terminal.Terminal {
     const result = try self.alloc.create(terminal.Terminal);
     errdefer self.alloc.destroy(result);
@@ -254,123 +246,17 @@ pub fn beginPresentationSnapshot(self: *Surface) !void {
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
     if (self.presentation_snapshot != null) return;
-    const live = self.renderer_state.terminal;
-    const pages = &live.screens.active.pages;
-    self.presentation_live_viewport = .{
-        .mode = pages.viewport,
-        .pin = pages.viewport_pin.*,
-        .row_offset = pages.viewport_pin_row_offset,
-    };
-    self.renderer_state.presentation_terminal = live;
-    self.presentation_snapshot = live;
-    self.renderer_state.presentation_preserve = .{
-        .context = self,
-        .callback = preservePresentationLocked,
-    };
-    live.flags.dirty.clear = true;
+    const frozen = try self.createSearchSnapshotLocked();
+    self.presentation_snapshot = frozen;
+    self.renderer_state.presentation_terminal = frozen;
     self.snapshot_text_row_anchor = null;
     self.presentation_snapshot_generation +%= 1;
     if (self.presentation_snapshot_generation == 0) {
         self.presentation_snapshot_generation = 1;
     }
-    self.logPresentationMemoryLocked("begin borrowed");
     self.queueRender() catch |err| {
         log.warn("failed to render after beginning snapshot mode err={}", .{err});
     };
-}
-
-fn restorePresentationViewportLocked(self: *Surface) void {
-    const saved = self.presentation_live_viewport orelse return;
-    const pages = &self.renderer_state.terminal.screens.active.pages;
-    pages.viewport = saved.mode;
-    pages.viewport_pin.* = saved.pin;
-    pages.viewport_pin_row_offset = saved.row_offset;
-    self.presentation_live_viewport = null;
-}
-
-/// Runs on the writer thread under the terminal mutex, before any mutation.
-fn preservePresentationLocked(context: *anyopaque, reason: rendererpkg.State.PresentationMutation) void {
-    const self: *Surface = @ptrCast(@alignCast(context));
-    log.info("snapshot diagnostic generation={} capture_trigger={s}", .{
-        self.presentation_snapshot_generation, @tagName(reason),
-    });
-    self.logPresentationMemoryLocked("before capture");
-    const snapshot = self.createSearchSnapshotLocked() catch |err| {
-        // Keep the child running if capture fails. Readers observe expiration
-        // rather than silently reading a terminal that is no longer frozen.
-        log.warn("ending frozen presentation after capture failure err={}", .{err});
-        self.restorePresentationViewportLocked();
-        self.presentation_snapshot = null;
-        self.renderer_state.presentation_terminal = null;
-        self.renderer_state.presentation_preserve = null;
-        self.renderer_state.terminal.flags.dirty.clear = true;
-        self.clearSnapshotDecorationsLocked();
-        return;
-    };
-    self.restorePresentationViewportLocked();
-    self.presentation_snapshot = snapshot;
-    self.renderer_state.presentation_terminal = snapshot;
-    self.renderer_state.presentation_preserve = null;
-    self.logPresentationMemoryLocked("after capture");
-    self.snapshot_text_row_anchor = null;
-    // Flattened decorations contain page pointers from the borrowed source.
-    // Ask the overlay to rebuild them against the newly owned pages.
-    self.clearSnapshotDecorationsLocked();
-}
-
-/// Opt-in through GHOSTTY_LOG=stderr. Inspect storage metadata without
-/// restoring compressed pages or allocating a second copy for diagnostics.
-pub fn logPresentationMemoryLocked(self: *Surface, event: []const u8) void {
-    if (builtin.is_test) return;
-    if (!global.logging().stderr) return;
-    const terminals = [_]?*terminal.Terminal{
-        self.renderer_state.terminal,
-        if (self.presentation_snapshot == self.renderer_state.terminal) null else self.presentation_snapshot,
-    };
-    for (terminals, 0..) |maybe_t, index| {
-        const t = maybe_t orelse continue;
-        var resident_bytes: usize = 0;
-        var compressed_bytes: usize = 0;
-        var resident_pages: usize = 0;
-        var compressed_pages: usize = 0;
-        var screens = t.screens.all.iterator();
-        while (screens.next()) |entry| {
-            var node = entry.value.*.pages.pages.first;
-            while (node) |n| : (node = n.next) {
-                switch (n.data) {
-                    .resident => |page| {
-                        resident_pages += 1;
-                        resident_bytes += page.memory.len;
-                    },
-                    .compressed => |page| {
-                        compressed_pages += 1;
-                        compressed_bytes += page.encoded.len;
-                    },
-                }
-            }
-        }
-        log.info("snapshot diagnostic generation={} event={s} source={s} resident_pages={} resident_bytes={} compressed_pages={} compressed_bytes={}", .{
-            self.presentation_snapshot_generation, event,          if (index == 0) "live" else "owned",
-            resident_pages,                        resident_bytes, compressed_pages,
-            compressed_bytes,
-        });
-    }
-}
-
-fn clearSnapshotDecorationsLocked(self: *Surface) void {
-    self.snapshot_decoration_viewport = null;
-    self.snapshot_text_row_anchor = null;
-    const arena = std.heap.ArenaAllocator.init(self.alloc);
-    const msg: rendererpkg.Message = .{
-        .snapshot_decorations = .{ .arena = arena, .layers = &.{} },
-    };
-    if (self.renderer_thread.mailbox.push(global.io(), msg, .{ .instant = {} }) == 0) {
-        self.renderer_state.mutex.unlock(global.io());
-        self.renderer_thread.wakeup.notify() catch {};
-        _ = self.renderer_thread.mailbox.push(global.io(), msg, .{ .forever = {} });
-        self.renderer_state.mutex.lockUncancelable(global.io());
-        self.snapshot_decoration_viewport = null;
-    }
 }
 
 /// Leave frozen presentation mode. The renderer is detached before snapshot
@@ -381,9 +267,6 @@ pub fn endPresentationSnapshot(self: *Surface) void {
         self.renderer_state.mutex.unlock(global.io());
         return;
     };
-    self.logPresentationMemoryLocked("end");
-    self.restorePresentationViewportLocked();
-    self.renderer_state.presentation_preserve = null;
     if (self.renderer_state.presentation_terminal == snapshot_terminal) {
         self.renderer_state.presentation_terminal = null;
     }
@@ -401,10 +284,8 @@ pub fn endPresentationSnapshot(self: *Surface) void {
         .snapshot_decorations = .{ .arena = empty_arena, .layers = &.{} },
     }, .{ .forever = {} });
 
-    if (snapshot_terminal != self.renderer_state.terminal) {
-        snapshot_terminal.deinit(self.alloc);
-        self.alloc.destroy(snapshot_terminal);
-    }
+    snapshot_terminal.deinit(self.alloc);
+    self.alloc.destroy(snapshot_terminal);
     self.queueRender() catch |err| {
         log.warn("failed to render after ending snapshot mode err={}", .{err});
     };
@@ -1255,11 +1136,6 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             },
         },
 
-        .application_protocol => |w| {
-            defer w.deinit();
-            const bytes = w.slice();
-            _ = try self.rt_app.performAction(.{ .surface = self }, .application_protocol, .{ .bytes = bytes.ptr, .len = bytes.len });
-        },
         .pwd_change => |w| {
             defer w.deinit();
 
@@ -1491,7 +1367,6 @@ fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
         const t: *terminal.Terminal = self.renderer_state.terminal;
-        self.renderer_state.preservePresentation(.child_exit);
         t.carriageReturn();
         t.linefeed() catch break :terminal;
         t.printString("Process exited. Press any key to close the terminal.") catch
@@ -1534,7 +1409,6 @@ fn childExitedAbnormally(
     const t: *terminal.Terminal = self.renderer_state.terminal;
 
     // No matter what move the cursor back to the column 0.
-    self.renderer_state.preservePresentation(.child_exit);
     t.carriageReturn();
 
     // Reset styles
@@ -1604,7 +1478,6 @@ fn passwordInput(self: *Surface, v: bool) !void {
         // waste time doing anything more.
         const old = self.io.terminal.flags.password_input;
         if (old == v) return;
-        self.renderer_state.preservePresentation(.password_input);
         self.io.terminal.flags.password_input = v;
     }
 
@@ -2150,10 +2023,8 @@ pub fn dumpTextLocked(
     alloc: Allocator,
     sel: terminal.Selection,
 ) !Text {
-    const source_screen = self.io.terminal.screens.active;
-
     // Read out the text
-    const text = try source_screen.selectionString(alloc, .{
+    const text = try self.io.terminal.screens.active.selectionString(alloc, .{
         .sel = sel,
         .trim = false,
     });
@@ -2163,19 +2034,19 @@ pub fn dumpTextLocked(
     const vp: ?Text.Viewport = viewport: {
         // If our bottom right pin is before the viewport, then we can't
         // possibly have this text be within the viewport.
-        const vp_tl_pin = source_screen.pages.getTopLeft(.viewport);
-        const br_pin = sel.bottomRight(source_screen);
+        const vp_tl_pin = self.io.terminal.screens.active.pages.getTopLeft(.viewport);
+        const br_pin = sel.bottomRight(self.io.terminal.screens.active);
         if (br_pin.before(vp_tl_pin)) break :viewport null;
 
         // If our top-left pin is after the viewport, then we can't possibly
         // have this text be within the viewport.
-        const vp_br_pin = source_screen.pages.getBottomRight(.viewport) orelse {
+        const vp_br_pin = self.io.terminal.screens.active.pages.getBottomRight(.viewport) orelse {
             // I don't think this is possible but I don't want to crash on
             // that assertion so let's just break out...
             log.warn("viewport bottom-right pin not found, bug?", .{});
             break :viewport null;
         };
-        const tl_pin = sel.topLeft(source_screen);
+        const tl_pin = sel.topLeft(self.io.terminal.screens.active);
         if (vp_br_pin.before(tl_pin)) break :viewport null;
 
         // We established that our top-left somewhere before the viewport
@@ -2185,7 +2056,7 @@ pub fn dumpTextLocked(
 
         // Our top-left point. If it doesn't exist in the viewport it must
         // be before and we can return (0,0).
-        const tl_pt: terminal.Point = source_screen.pages.pointFromPin(
+        const tl_pt: terminal.Point = self.io.terminal.screens.active.pages.pointFromPin(
             .viewport,
             tl_pin,
         ) orelse tl: {
@@ -2198,7 +2069,7 @@ pub fn dumpTextLocked(
 
         // Our bottom-right point. If it doesn't exist in the viewport
         // it must be the bottom-right of the viewport.
-        const br_pt = source_screen.pages.pointFromPin(
+        const br_pt = self.io.terminal.screens.active.pages.pointFromPin(
             .viewport,
             br_pin,
         ) orelse br: {
@@ -2206,7 +2077,7 @@ pub fn dumpTextLocked(
                 assert(vp_br_pin.before(br_pin));
             }
 
-            break :br source_screen.pages.pointFromPin(
+            break :br self.io.terminal.screens.active.pages.pointFromPin(
                 .viewport,
                 vp_br_pin,
             ).?;
@@ -3078,10 +2949,7 @@ pub fn keyCallback(
     // some data to send to the pty, then we move the viewport down to the
     // bottom. We also clear the selection for any key other then modifiers.
     if (!event.key.modifier()) {
-        // Keep the cursor visible while the user is typing and restart its
-        // blink interval. Doing this from input rather than terminal output
-        // prevents cursor-control sequences from continually resetting the
-        // timer.
+        // Keep the cursor visible while typing and restart its blink interval.
         if (event.action != .release) {
             _ = self.renderer_thread.mailbox.push(
                 global.io(),
@@ -5175,7 +5043,6 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         .reset => {
             self.renderer_state.mutex.lockUncancelable(global.io());
             defer self.renderer_state.mutex.unlock(global.io());
-            self.renderer_state.preservePresentation(.reset);
             self.renderer_state.terminal.fullReset();
         },
 
@@ -6814,131 +6681,4 @@ test "queueIo frees allocated writes in readonly mode" {
         .alloc = testing.allocator,
         .data = data,
     } }, .unlocked);
-}
-
-test "lazy presentation borrows until mutation and restores live navigation" {
-    const testing = std.testing;
-    const alloc = testing.allocator;
-    var live = try terminal.Terminal.init(testing.io, alloc, .{
-        .cols = 16,
-        .rows = 2,
-        .max_scrollback_bytes = null,
-    });
-    defer live.deinit(alloc);
-    var stream = live.vtStream();
-    defer stream.deinit();
-    for (0..30) |_| stream.nextSlice("original\r\n");
-    var mutex: std.Io.Mutex = .init;
-    const surface = try alloc.create(Surface);
-    defer alloc.destroy(surface);
-    surface.alloc = alloc;
-    surface.renderer_state = .{ .mutex = &mutex, .terminal = &live };
-    surface.presentation_snapshot = null;
-    surface.presentation_live_viewport = null;
-    surface.presentation_snapshot_generation = 0;
-    surface.snapshot_decoration_viewport = null;
-    surface.snapshot_text_row_anchor = null;
-    const mailbox = try rendererpkg.Thread.Mailbox.create(alloc);
-    defer mailbox.destroy(alloc);
-    defer while (mailbox.pop(testing.io)) |msg| {
-        switch (msg) {
-            .snapshot_decorations => |v| v.arena.deinit(),
-            else => msg.deinit(),
-        }
-    };
-    surface.renderer_thread.mailbox = mailbox;
-    surface.renderer_thread.wakeup = try global.xev.Async.init();
-    defer surface.renderer_thread.wakeup.deinit();
-    defer surface.endPresentationSnapshot();
-
-    live.screens.active.scroll(.{ .row = 1 });
-    const original_offset = live.screens.active.pages.scrollbar().offset;
-    try surface.beginPresentationSnapshot();
-    const generation = surface.presentation_snapshot_generation;
-    try surface.beginPresentationSnapshot();
-    try testing.expectEqual(generation, surface.presentation_snapshot_generation);
-    try testing.expect(surface.presentation_snapshot.? == &live);
-    live.screens.active.scroll(.{ .row = 3 });
-    surface.endPresentationSnapshot();
-    try testing.expectEqual(original_offset, live.screens.active.pages.scrollbar().offset);
-    live.screens.active.pages.assertIntegrity();
-    live.screens.active.pages.scroll(.{ .active = {} });
-
-    try surface.beginPresentationSnapshot();
-    live.screens.active.scroll(.{ .row = 3 });
-    const before = try live.screens.active.selectionString(alloc, .{
-        .sel = .init(live.screens.active.pages.getTopLeft(.screen), live.screens.active.pages.getBottomRight(.screen).?, false),
-        .trim = false,
-    });
-    defer alloc.free(before);
-    const frozen = blk: {
-        mutex.lockUncancelable(testing.io);
-        defer mutex.unlock(testing.io);
-        surface.renderer_state.preservePresentation(.test_mutation);
-        const frozen = surface.presentation_snapshot.?;
-        try testing.expect(frozen != &live);
-        try testing.expect(surface.renderer_state.presentation_preserve == null);
-        try testing.expectEqual(terminal.PageList.Viewport.active, live.screens.active.pages.viewport);
-        try testing.expectEqual(@as(usize, 3), frozen.screens.active.pages.scrollbar().offset);
-        stream.nextSlice("new output\r\n");
-        try live.resize(alloc, .{ .cols = 8, .rows = 3 });
-        live.eraseDisplay(.scrollback, false);
-        live.fullReset();
-        surface.renderer_state.preservePresentation(.test_mutation);
-        try testing.expect(surface.presentation_snapshot.? == frozen);
-        break :blk frozen;
-    };
-    const after = try frozen.screens.active.selectionString(alloc, .{
-        .sel = .init(frozen.screens.active.pages.getTopLeft(.screen), frozen.screens.active.pages.getBottomRight(.screen).?, false),
-        .trim = false,
-    });
-    defer alloc.free(after);
-    try testing.expectEqualStrings(before, after);
-    try testing.expectEqual(@as(u16, 16), frozen.cols);
-    surface.endPresentationSnapshot();
-
-    // A lazy capture copies compressed history and lets an in-flight search
-    // rebind before the live pages are reset or discarded.
-    try live.resize(alloc, .{ .cols = 80, .rows = 2 });
-    for (0..1000) |_| stream.nextSlice("compressed history\r\n");
-    _ = live.compress(.full);
-    try surface.beginPresentationSnapshot();
-    try testing.expect(surface.presentation_snapshot.? == &live);
-    var cursor = try terminal.SnapshotTextCursor.init(live.screens.active, alloc);
-    defer cursor.deinit();
-    try testing.expect((try cursor.next()) != null);
-    mutex.lockUncancelable(testing.io);
-    surface.renderer_state.preservePresentation(.test_mutation);
-    const compressed_snapshot = surface.presentation_snapshot.?;
-    mutex.unlock(testing.io);
-    try testing.expect(compressed_snapshot != &live);
-    var compressed_pages: usize = 0;
-    var node = compressed_snapshot.screens.active.pages.pages.first;
-    while (node) |n| : (node = n.next) {
-        if (n.data == .compressed) compressed_pages += 1;
-    }
-    try testing.expect(compressed_pages > 0);
-    try cursor.rebind(compressed_snapshot.screens.active);
-    live.fullReset();
-    while (try cursor.next()) |_| {}
-    var after_scan: usize = 0;
-    node = compressed_snapshot.screens.active.pages.pages.first;
-    while (node) |n| : (node = n.next) {
-        if (n.data == .compressed) after_scan += 1;
-    }
-    try testing.expectEqual(compressed_pages, after_scan);
-    surface.endPresentationSnapshot();
-
-    // A failed first capture expires the session and leaves output usable.
-    try surface.beginPresentationSnapshot();
-    var failing: testing.FailingAllocator = .init(alloc, .{ .fail_index = 0 });
-    surface.alloc = failing.allocator();
-    defer surface.alloc = alloc;
-    mutex.lockUncancelable(testing.io);
-    surface.renderer_state.preservePresentation(.test_mutation);
-    mutex.unlock(testing.io);
-    try testing.expect(surface.presentation_snapshot == null);
-    try testing.expect(surface.renderer_state.presentation_terminal == null);
-    try testing.expect(surface.renderer_state.presentation_preserve == null);
-    stream.nextSlice("output after capture failure");
 }

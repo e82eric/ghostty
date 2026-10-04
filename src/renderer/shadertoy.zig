@@ -42,7 +42,7 @@ pub const Uniforms = extern struct {
 };
 
 /// The target to load shaders for.
-pub const Target = enum { glsl, msl, spirv };
+pub const Target = enum { glsl, msl };
 
 /// Load a set of shaders from files and convert them to the target
 /// format. The shader order is preserved.
@@ -102,16 +102,7 @@ pub fn loadFromFile(
     // Convert to full GLSL
     const glsl: [:0]const u8 = glsl: {
         var stream: std.Io.Writer.Allocating = .init(alloc);
-        if (target == .spirv) {
-            const prefix = @embedFile("shaders/shadertoy_prefix.glsl");
-            const separate = try std.mem.replaceOwned(u8, alloc, prefix, "layout(binding = 0) uniform sampler2D iChannel0;", "layout(set = 0, binding = 0) uniform texture2D channel_texture;\nlayout(set = 0, binding = 2) uniform sampler channel_sampler;\n#define iChannel0 sampler2D(channel_texture, channel_sampler)");
-            const builtin_position = try std.mem.replaceOwned(u8, alloc, separate, "layout(location = 0) in vec4 gl_FragCoord;", "");
-            try stream.writer.writeAll(builtin_position);
-            try stream.writer.writeAll("\n\n");
-            try stream.writer.writeAll(src);
-        } else {
-            try glslFromShader(&stream.writer, src);
-        }
+        try glslFromShader(&stream.writer, src);
         try stream.writer.writeByte(0);
         break :glsl stream.written()[0 .. stream.written().len - 1 :0];
     };
@@ -146,7 +137,6 @@ pub fn loadFromFile(
         // is the final result that will be returned to the caller.
         .glsl => try glslFromSpv(alloc_gpa, spirv),
         .msl => try mslFromSpv(alloc_gpa, spirv),
-        .spirv => try alloc_gpa.dupeZ(u8, spirv),
     };
 }
 

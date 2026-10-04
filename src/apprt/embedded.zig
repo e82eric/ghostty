@@ -386,7 +386,6 @@ pub const Platform = union(PlatformTag) {
     ios: IOS,
     windows: extern struct { hwnd: *anyopaque },
     opengl: OpenGL,
-    wgpu: extern struct { window: ?*anyopaque, driver: *const @import("../renderer/Vulkan.zig").Driver },
 
     pub const OpenGL = extern struct {
         window: ?*anyopaque,
@@ -452,10 +451,6 @@ pub const Platform = union(PlatformTag) {
                 .display = c_platform.opengl.display,
                 .context = c_platform.opengl.context orelse return error.OpenGLContextMustBeSet,
             } },
-            .wgpu => .{ .wgpu = .{
-                .window = c_platform.opengl.window,
-                .driver = @ptrCast(@alignCast(c_platform.opengl.context orelse return error.VulkanHostRequired)),
-            } },
         };
     }
 };
@@ -468,7 +463,6 @@ pub const PlatformTag = enum(c_int) {
     ios = 2,
     windows = 3,
     opengl = 4,
-    wgpu = 5,
 };
 
 pub const EnvVar = extern struct {
@@ -1537,14 +1531,6 @@ pub const CAPI = struct {
         height: u32,
         generation: u64,
     };
-    const GPUFrameDescription = extern struct {
-        handle: ?*GLFrame,
-        texture: usize,
-        width: u32,
-        height: u32,
-        generation: u64,
-    };
-
     /// This is the same as Surface.KeyEvent but this is the raw C API version.
     const KeyEvent = extern struct {
         action: input.Action,
@@ -1665,8 +1651,6 @@ pub const CAPI = struct {
         surface: *Surface,
         generation: u64,
         cursor: terminal.SnapshotTextCursor,
-        scanned_bytes: usize = 0,
-        finished: bool = false,
     };
 
     const SnapshotCell = extern struct { x: u32, y: u64 };
@@ -1810,12 +1794,7 @@ pub const CAPI = struct {
         };
         const screen = t.screens.active;
         var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
-        var preserved = pin.node.pagePreservingState(global.alloc()) catch |err| {
-            @import("../c_api_error.zig").set(err);
-            return false;
-        };
-        defer preserved.deinit();
-        const page = preserved.page();
+        const page = pin.node.page();
         const row = &page.rows.ptr(page.memory)[pin.y];
         if (page.getCells(row)[pin.x].wide == .spacer_tail) {
             if (snap_right and pin.x + 1 < pin.node.cols()) {
@@ -2054,7 +2033,6 @@ pub const CAPI = struct {
             return null;
         }
         const t = state.presentation_terminal orelse return null;
-        surface.core_surface.logPresentationMemoryLocked("text scan begin");
         const cursor = terminal.SnapshotTextCursor.init(t.screens.active, global.alloc()) catch |err| {
             @import("../c_api_error.zig").set(err);
             return null;
@@ -2086,13 +2064,7 @@ pub const CAPI = struct {
             @import("../c_api_error.zig").set(error.SnapshotExpired);
             return false;
         }
-        cursor.cursor.rebind(state.terminalForRender().screens.active) catch |err| {
-            @import("../c_api_error.zig").set(err);
-            return false;
-        };
         cursor.cursor.reset();
-        cursor.scanned_bytes = 0;
-        cursor.finished = false;
         return true;
     }
 
@@ -2110,25 +2082,12 @@ pub const CAPI = struct {
             @import("../c_api_error.zig").set(error.SnapshotExpired);
             return -1;
         }
-        cursor.cursor.rebind(state.terminalForRender().screens.active) catch |err| {
-            @import("../c_api_error.zig").set(err);
-            return -1;
-        };
         const chunk = (cursor.cursor.next() catch |err| {
             @import("../c_api_error.zig").set(err);
             return -1;
         }) orelse {
-            if (!cursor.finished) {
-                cursor.finished = true;
-                cursor.surface.core_surface.logPresentationMemoryLocked("text scan end");
-                log.info("snapshot diagnostic generation={} scanned_bytes={} point_buffer_bytes={}", .{
-                    cursor.generation,                                            cursor.scanned_bytes,
-                    cursor.cursor.points.capacity * @sizeOf(terminal.Coordinate),
-                });
-            }
             return 0;
         };
-        cursor.scanned_bytes += chunk.text.len;
         result.* = .{
             .text = chunk.text.ptr,
             .points = chunk.points.ptr,
@@ -2168,16 +2127,12 @@ pub const CAPI = struct {
         const pin = snapshotCellPin(screen, .{ .x = 0, .y = row }, anchor) orelse return false;
         surface.core_surface.snapshot_text_row_anchor = .{ .pin = pin, .row = row };
         const alloc = global.alloc();
-        var preserved = pin.node.pagePreservingState(alloc) catch |err| {
-            @import("../c_api_error.zig").set(err);
-            return false;
-        };
-        defer preserved.deinit();
+        const page = pin.node.page();
         var text_writer: std.Io.Writer.Allocating = .init(alloc);
         defer text_writer.deinit();
         var points: std.ArrayList(terminal.Coordinate) = .empty;
         defer points.deinit(alloc);
-        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(preserved.page(), .{
+        var formatter: @import("../terminal/formatter.zig").PageFormatter = .init(page, .{
             .emit = .plain,
             .unwrap = false,
             .trim = false,
@@ -2205,7 +2160,7 @@ pub const CAPI = struct {
             .text = text_copy.ptr,
             .columns = columns.ptr,
             .len = written.len,
-            .wraps_to_next = preserved.page().rows.ptr(preserved.page().memory)[pin.y].wrap,
+            .wraps_to_next = page.rows.ptr(page.memory)[pin.y].wrap,
         };
         return true;
     }
@@ -2942,21 +2897,6 @@ pub const CAPI = struct {
         }
     }
 
-    export fn ghostty_surface_take_gpu_frame(surface: *Surface, result: *GPUFrameDescription) bool {
-        @import("../c_api_error.zig").clear();
-        if (comptime @import("../build_config.zig").renderer != .vulkan) return false;
-        const frame = surface.core_surface.renderer.takeFrame() orelse return false;
-        const alloc = surface.app.core_app.alloc;
-        const owned = alloc.create(GLFrame) catch |err| {
-            @import("../c_api_error.zig").set(err);
-            frame.deinit();
-            return false;
-        };
-        owned.* = .{ .alloc = alloc, .frame = frame };
-        result.* = .{ .handle = owned, .texture = frame.texture.resource.handle, .width = frame.texture.width, .height = frame.texture.height, .generation = frame.texture.generation };
-        return true;
-    }
-
     /// Update the size of a surface. This will trigger resize notifications
     /// to the pty and the renderer.
     export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
@@ -3051,6 +2991,13 @@ pub const CAPI = struct {
     export fn ghostty_surface_foreground_pid(surface: *Surface) u64 {
         @import("../c_api_error.zig").clear();
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
+    }
+
+    export fn ghostty_surface_shell_pid(surface: *Surface) u64 {
+        return surface.core_surface.getProcessInfo(.shell_pid) orelse 0;
+    }
+    export fn ghostty_surface_shell_creation_time(surface: *Surface) u64 {
+        return surface.core_surface.getProcessInfo(.shell_creation_time) orelse 0;
     }
 
     /// Returns the PTY name for the surface. The returned string must be
