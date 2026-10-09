@@ -23,6 +23,7 @@ const RESULT_ROWS: usize = 7;
 /// Ghostty owns source readers, terminal snapshots and Lua callbacks.
 /// The shared NFM control owns query input, streaming search and picker drawing.
 pub(crate) struct Picker {
+    traced_results: Option<(usize, usize, bool, Option<u64>)>,
     context: egui::Context,
     keys: Vec<config::PickerKey>,
     shared: nfm_egui::Picker<source::Snapshot>,
@@ -33,7 +34,6 @@ pub(crate) struct Picker {
     pub(crate) typography: font::Typography,
     command_preview: Option<preview::CommandPreview>,
     resolved_preview: Option<preview::ResolvedPreview>,
-    traced_preview_selection: Option<(u64, usize)>,
     snapshot_preview: Option<Arc<preview::SnapshotPreview>>,
     callback: Option<std::rc::Rc<crate::lua_callbacks::Callback>>,
     request_params: std::collections::BTreeMap<String, String>,
@@ -283,6 +283,7 @@ impl Picker {
             pipe_session: None,
             pipe_items: Vec::new(),
             pipe_publisher: None,
+            traced_results: None,
             shared,
             cursor_row: None,
             position: options.position,
@@ -292,7 +293,6 @@ impl Picker {
             snapshot_preview,
             command_preview,
             resolved_preview,
-            traced_preview_selection: None,
             callback: options.callback,
             request_params: options.params,
             enter_action: options.enter_action,
@@ -461,30 +461,77 @@ impl Picker {
             }
         }
         self.shared.set_error(self.error.lock().unwrap().clone());
-        let show_started = crate::preview_trace::start();
+        let traced_query = crate::input_trace::enabled().then(|| self.shared.query().to_owned());
+        let show_started = crate::input_trace::start();
+        if crate::input_trace::enabled() {
+            let (keys, text_events) = ctx.input(|input| {
+                (
+                    input
+                        .events
+                        .iter()
+                        .filter(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+                        .count(),
+                    input
+                        .events
+                        .iter()
+                        .filter(|event| matches!(event, egui::Event::Text(_)))
+                        .count(),
+                )
+            });
+            crate::input_trace::record(
+                "picker_input_started",
+                self.generation.unwrap_or(0) as usize,
+                None,
+                &format!(
+                    "keys={keys} text_events={text_events} query_bytes={}",
+                    self.shared.query().len()
+                ),
+            );
+        }
         let output = self
             .shared
             .show(ctx, self.placement(bounds), &appearance, !interactive);
         let selection = output.selection();
-        if crate::preview_trace::enabled() {
-            crate::preview_trace::record(
-                "picker_show",
-                selection.map_or(usize::MAX, |s| s.index),
-                show_started,
-                if output.busy {
-                    "busy=true"
-                } else {
-                    "busy=false"
-                },
+        if crate::input_trace::enabled() {
+            let state = (
+                output.total,
+                output.matched,
+                output.busy,
+                selection.map(|s| s.source_version),
             );
-            if output.preview_rendered && output.preview_selection != self.traced_preview_selection
-            {
-                self.traced_preview_selection = output.preview_selection;
-                if let Some((_, index)) = output.preview_selection {
-                    crate::preview_trace::record("ui_preview_displayed", index, None, "");
-                }
+            let detail = format!(
+                "total={} matched={} busy={} source_version={:?} query_bytes={}",
+                output.total,
+                output.matched,
+                output.busy,
+                state.3,
+                self.shared.query().len()
+            );
+            crate::input_trace::record(
+                "picker_show",
+                self.generation.unwrap_or(0) as usize,
+                show_started,
+                &detail,
+            );
+            if traced_query.as_deref() != Some(self.shared.query()) {
+                crate::input_trace::record(
+                    "picker_query_changed",
+                    self.generation.unwrap_or(0) as usize,
+                    None,
+                    &detail,
+                );
+            }
+            if self.traced_results != Some(state) {
+                self.traced_results = Some(state);
+                crate::input_trace::record(
+                    "picker_results_displayed",
+                    self.generation.unwrap_or(0) as usize,
+                    None,
+                    &detail,
+                );
             }
         }
+
         if let Some(preview) = &mut self.resolved_preview {
             if output.preview_rect.is_some() && !self.shared.is_closed() {
                 if let Some(selection) = selection {

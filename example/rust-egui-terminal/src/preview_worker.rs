@@ -9,7 +9,7 @@ pub(crate) struct ConfigSource(pub String, pub String);
 #[derive(Clone)]
 pub(crate) struct FactoryContext(pub serde_json::Value);
 #[derive(Clone)]
-struct RequestContext(Cancellation, usize, usize);
+struct RequestContext(Cancellation, usize);
 
 #[derive(serde::Serialize)]
 pub(crate) struct DirectoryItem {
@@ -110,7 +110,7 @@ fn command_job<T: Send + 'static>(
 }
 pub(crate) fn install_ui_api(lua: &Lua) -> mlua::Result<()> {
     let helpers = lua.create_table()?;
-    for name in ["run", "measure", "directory_items"] {
+    for name in ["run", "directory_items"] {
         helpers.set(
             name,
             lua.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
@@ -123,8 +123,6 @@ pub(crate) fn install_ui_api(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("preview", helpers)
 }
 struct Request {
-    index: usize,
-    queued_at: Option<std::time::Instant>,
     text: String,
     value: String,
     filesystem: bool,
@@ -269,30 +267,12 @@ impl Worker {
                             Err(_) => break,
                         };
                         if request.cancel.is_cancelled() {
-                            crate::preview_trace::record(
-                                "lua_queue_cancelled",
-                                request.index,
-                                request.queued_at,
-                                "",
-                            );
                             continue;
                         }
-                        crate::preview_trace::record(
-                            "lua_started",
-                            request.index,
-                            request.queued_at,
-                            "",
-                        );
-                        let lua_started = crate::preview_trace::start();
                         let result = (|| -> Result<_, String> {
                             let entry = initialized.as_ref().map_err(ToString::to_string)?;
-                            install(
-                                &lua,
-                                request.cancel.clone(),
-                                request.max_bytes,
-                                request.index,
-                            )
-                            .map_err(|e| e.to_string())?;
+                            install(&lua, request.cancel.clone(), request.max_bytes)
+                                .map_err(|e| e.to_string())?;
                             let callback: mlua::Function =
                                 lua.registry_value(entry).map_err(|e| e.to_string())?;
                             let resolver = crate::lua_callbacks::PreviewResolver {
@@ -313,16 +293,7 @@ impl Worker {
                             )
                         })();
                         lua.remove_hook();
-                        crate::preview_trace::record(
-                            "lua_finished",
-                            request.index,
-                            lua_started,
-                            if result.is_ok() {
-                                "ok=true"
-                            } else {
-                                "ok=false"
-                            },
-                        );
+
                         let _ = request.reply.send(result);
                     }
                 })
@@ -332,7 +303,6 @@ impl Worker {
     }
     pub(crate) fn resolve(
         &self,
-        index: usize,
         text: String,
         value: String,
         filesystem: bool,
@@ -344,8 +314,6 @@ impl Worker {
         let (reply, rx) = mpsc::channel();
         self.0
             .send(Request {
-                index,
-                queued_at: crate::preview_trace::start(),
                 text,
                 value,
                 filesystem,
@@ -358,7 +326,6 @@ impl Worker {
             .map_err(|_| "Lua preview worker stopped")?;
         loop {
             if cancel.is_cancelled() {
-                crate::preview_trace::record("nfm_lua_wait_cancelled", index, None, "");
                 return Err("Preview cancelled".into());
             }
             match rx.recv_timeout(Duration::from_millis(20)) {
@@ -369,8 +336,8 @@ impl Worker {
         }
     }
 }
-fn install(lua: &Lua, cancel: Cancellation, limit: usize, index: usize) -> mlua::Result<()> {
-    lua.set_app_data(RequestContext(cancel.clone(), limit, index));
+fn install(lua: &Lua, cancel: Cancellation, limit: usize) -> mlua::Result<()> {
+    lua.set_app_data(RequestContext(cancel.clone(), limit));
     let hook_cancel = cancel.clone();
     lua.set_hook(
         mlua::HookTriggers::new().every_nth_instruction(10_000),
@@ -395,25 +362,15 @@ fn install_helpers(lua: &Lua) -> mlua::Result<()> {
     helpers.set(
         "directory_items",
         lua.create_function(|lua, path: String| {
-            let RequestContext(cancel, limit, index) = lua
+            let RequestContext(cancel, limit) = lua
                 .app_data_ref::<RequestContext>()
                 .ok_or_else(|| {
                     mlua::Error::external("preview.directory_items requires a preview request")
                 })?
                 .clone();
-            let started = crate::preview_trace::start();
             let result =
                 directory_items(std::path::Path::new(&path), limit, || cancel.is_cancelled());
-            crate::preview_trace::record(
-                "directory",
-                index,
-                started,
-                if result.is_ok() {
-                    "ok=true"
-                } else {
-                    "ok=false"
-                },
-            );
+
             match result.map_err(mlua::Error::external)? {
                 Some(items) => lua.to_value(&items),
                 None => Ok(mlua::Value::Nil),
@@ -421,33 +378,9 @@ fn install_helpers(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     helpers.set(
-        "measure",
-        lua.create_function(|lua, (stage, callback): (String, mlua::Function)| {
-            if !matches!(stage.as_str(), "file_read" | "directory" | "media") {
-                return Err(mlua::Error::external("Unknown preview timing stage"));
-            }
-            let started = crate::preview_trace::start();
-            let index = lua
-                .app_data_ref::<RequestContext>()
-                .map_or(0, |context| context.2);
-            let result = callback.call::<_, mlua::MultiValue>(());
-            crate::preview_trace::record(
-                &stage,
-                index,
-                started,
-                if result.is_ok() {
-                    "ok=true"
-                } else {
-                    "ok=false"
-                },
-            );
-            result
-        })?,
-    )?;
-    helpers.set(
         "run",
         lua.create_function(move |lua, spec: mlua::Table| {
-            let RequestContext(cancel, limit, index) = lua
+            let RequestContext(cancel, limit) = lua
                 .app_data_ref::<RequestContext>()
                 .ok_or_else(|| {
                     mlua::Error::external("preview.run is only available during a preview request")
@@ -466,44 +399,7 @@ fn install_helpers(lua: &Lua) -> mlua::Result<()> {
             command.working_directory = spec.get::<_, Option<String>>("cwd")?.map(Into::into);
             command.output_limit = limit;
             let started = std::time::Instant::now();
-            let trace_started = crate::preview_trace::start();
-            let cancellation_seen =
-                std::sync::Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
-            if crate::preview_trace::enabled() {
-                let observed_cancel = cancellation_seen.clone();
-                command.observer = Some(nfm_preview_command::CommandObserver::new(move |event| {
-                    use nfm_preview_command::CommandEvent;
-                    match event {
-                        CommandEvent::SpawnStarted => {
-                            crate::preview_trace::record("command_spawn_started", index, None, "")
-                        }
-                        CommandEvent::Spawned => crate::preview_trace::record(
-                            "command_spawn_finished",
-                            index,
-                            trace_started,
-                            "",
-                        ),
-                        CommandEvent::FirstStdout => crate::preview_trace::record(
-                            "command_first_stdout",
-                            index,
-                            trace_started,
-                            "",
-                        ),
-                        // NFM sends Finished after its child guard has terminated/reaped
-                        // the child and released the command's local resources.
-                        CommandEvent::Finished => crate::preview_trace::record(
-                            "command_cleanup_finished",
-                            index,
-                            observed_cancel.get().copied(),
-                            if observed_cancel.get().is_some() {
-                                "cancelled=true"
-                            } else {
-                                "cancelled=false"
-                            },
-                        ),
-                    }
-                }));
-            }
+
             let job_cancel = cancel.clone();
             let result = command_job(
                 || cancel.is_cancelled() || started.elapsed() >= Duration::from_millis(timeout),
@@ -514,35 +410,12 @@ fn install_helpers(lua: &Lua) -> mlua::Result<()> {
                         || {
                             let cancelled = cancel.is_cancelled();
                             let timed_out = started.elapsed() >= Duration::from_millis(timeout);
-                            if (cancelled || timed_out)
-                                && crate::preview_trace::enabled()
-                                && cancellation_seen.set(std::time::Instant::now()).is_ok()
-                            {
-                                crate::preview_trace::record(
-                                    "command_cancel_observed",
-                                    index,
-                                    trace_started,
-                                    if cancelled {
-                                        "reason=selection"
-                                    } else {
-                                        "reason=timeout"
-                                    },
-                                );
-                            }
+
                             cancelled || timed_out
                         },
                         |_, _| true,
                     );
-                    crate::preview_trace::record(
-                        "command_execution",
-                        index,
-                        trace_started,
-                        if result.is_ok() {
-                            "ok=true"
-                        } else {
-                            "ok=false"
-                        },
-                    );
+
                     result
                 },
             )

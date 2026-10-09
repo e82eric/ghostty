@@ -844,7 +844,6 @@ dependencies = [
  "mlua",
  "nfm-egui",
  "nfm-picker-sources",
- "nfm-preview-command",
  "nfm-preview-file",
  "nfm_file_system",
  "nfm_search_core",

@@ -2234,7 +2234,7 @@ mod tests {
     #[test]
     fn lua_file_preview_samples_binary_files_and_preserves_utf8_boundaries() {
         let source = include_str!("../ghostty.example.lua");
-        let start = source.find("local function preview_measure(").unwrap();
+        let start = source.find("local function preview_path(").unwrap();
         let end = source[start..]
             .find("local function preview_directory(")
             .unwrap()

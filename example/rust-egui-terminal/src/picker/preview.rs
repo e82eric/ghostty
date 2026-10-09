@@ -406,7 +406,7 @@ impl ResolvedPreview {
             return;
         }
         self.key = Some(key);
-        crate::preview_trace::record("selection_handoff", selection.index, None, "");
+
         if let super::config::Preview::Dynamic {
             resolve: Some(resolve),
             max_bytes,
@@ -427,7 +427,6 @@ impl ResolvedPreview {
                             return Err("Preview is being resolved".into());
                         }
                         worker.resolve(
-                            selected.index,
                             text.clone(),
                             value.clone(),
                             filesystem,
@@ -438,9 +437,8 @@ impl ResolvedPreview {
                         )
                     },
                 );
-                shared
-                    .set_preview_provider(ctx, crate::preview_trace::provider(Arc::new(provider)));
-                crate::preview_trace::record("provider_installed", selection.index, None, "");
+                shared.set_preview_provider(ctx, Arc::new(provider));
+
                 shared.set_external_preview(false);
                 ctx.request_repaint();
                 return;

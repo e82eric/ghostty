@@ -692,12 +692,28 @@ pub(super) enum Provider {
 }
 impl SearchSnapshotProvider<Snapshot> for Provider {
     fn snapshot(&self) -> Option<Arc<Snapshot>> {
-        match self {
+        let started = crate::input_trace::start();
+        let snapshot = match self {
             Self::Streaming(s) => s.snapshot().map(|s| Arc::new(Snapshot::Streaming(s))),
             Self::Structured(s) => Some(Arc::new(Snapshot::Structured(s.clone()))),
             #[cfg(windows)]
             Self::FileSystem(s) => s.snapshot().map(|s| Arc::new(Snapshot::FileSystem(s))),
+        };
+        if crate::input_trace::enabled() {
+            if let Some(snapshot) = &snapshot {
+                crate::input_trace::record(
+                    "source_snapshot_acquired",
+                    0,
+                    started,
+                    &format!(
+                        "source_version={} total={}",
+                        snapshot.version(),
+                        snapshot.len()
+                    ),
+                );
+            }
         }
+        snapshot
     }
     fn snapshot_version(&self) -> u64 {
         match self {

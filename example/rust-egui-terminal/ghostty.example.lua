@@ -1,5 +1,5 @@
 -- Extended Windows sample. Customize tool dependencies and picker names as needed.
--- Lua reads text/images; directory previews use cmd /c dir and video previews use
+-- Lua reads text/images; directory previews use preview.directory_items and video previews use
 -- configurable ffmpeg/ffprobe commands. Help/history command previews require pwsh with
 -- -CommandWithArgs (history also uses bat). Text search requires rg; ProfileHistory
 -- additionally requires PowershellHistoryReader.exe.
@@ -26,11 +26,7 @@ local function preview_path(path, cwd)
   if not cwd or path:match('^%a:') or path:match('^[\\/]') then return path end
   return cwd .. '/' .. path
 end
-local function preview_measure(stage, callback)
-  if preview.measure then return preview.measure(stage, callback) end
-  return callback()
-end
-local function preview_read_bytes_impl(path)
+local function preview_read_bytes(path)
   local file = assert(io.open(path, 'rb'))
   local ok, bytes = pcall(function()
     local bytes, read_error = file:read(10 * 1024 * 1024 + 1)
@@ -43,10 +39,8 @@ local function preview_read_bytes_impl(path)
   assert(ok, bytes)
   return bytes
 end
-local function preview_read_bytes(path)
-  return preview_measure("file_read", function() return preview_read_bytes_impl(path) end)
-end
-local function preview_read_text_impl(path, display_path)
+
+local function preview_read_text(path, display_path)
   local file = assert(io.open(path, 'rb'))
   local ok, result = pcall(function()
     local function read(count)
@@ -103,9 +97,7 @@ local function preview_read_text_impl(path, display_path)
   return result.text, result.binary
 end
 
-local function preview_read_text(path, display_path)
-  return preview_measure("file_read", function() return preview_read_text_impl(path, display_path) end)
-end
+
 local function preview_directory(path, cwd)
   local items = preview.directory_items(preview_path(path, cwd))
   if not items then return nil end

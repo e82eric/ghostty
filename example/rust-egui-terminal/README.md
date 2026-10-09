@@ -755,69 +755,23 @@ continuation lines are joined. The default is `false`.
 
 ### Preview configuration
 
-To diagnose preview delays, set `GHOSTTY_PREVIEW_TRACE` to a log file path before
-starting Ghostty. The opt-in trace records picker frame durations, selection
-handoff, provider installation, NFM preview work, Lua queue/execution timings,
-and UI display. Version 2 also records full UI frames, egui updates, buffer swaps,
-repaint requests/receipt, command execution, and sample Lua file reads.
-Version 3 times OpenGL context acquisition directly and records command spawn,
-first stdout, cancellation detection and cleanup completion. Cancelled cleanup
-timing includes direct-child termination/reaping; it does not track descendant
-processes or separately time detached pipe-reader threads.
-Lua readers can use `preview.measure("file_read", function() ... end)` to record
-their own IO interval; results and errors propagate normally. It records item
-indexes and timings, not paths or content.
-Logging uses a separate thread and a bounded nonblocking queue; entries can be
-dropped under overload. Unset the variable to disable tracing.
+To diagnose typing delays while results load, enable the input trace before
+launching Ghostty:
 
 ```powershell
-$env:GHOSTTY_PREVIEW_TRACE = "$env:TEMP\ghostty-preview-timing.log"
+$env:GHOSTTY_INPUT_TRACE = "$env:TEMP\ghostty-input-timing.log"
 & .\ghostty_egui.exe
 ```
 
-To distinguish queued GPU work from presentation blocking, run once with the
-optional version-5 GPU synchronization diagnostic:
-
-```powershell
-$env:GHOSTTY_PREVIEW_TRACE = "$env:TEMP\ghostty-preview-gpu-timing.log"
-$env:GHOSTTY_PREVIEW_TRACE_GPU_SYNC = "1"
-& .\ghostty_egui.exe
-Remove-Item Env:GHOSTTY_PREVIEW_TRACE_GPU_SYNC
-```
-
-This calls `glFinish()` before each presented buffer swap and separately records
-`gpu_finish_finished` and `ui_swap_finished`. Slow GPU completion with a fast swap
-suggests pending GPU work or synchronization; fast completion with a slow swap
-points toward presentation or driver blocking. Compare with a normal run because
-the diagnostic changes GPU scheduling and can reduce performance. It requires
-tracing to be enabled and is disabled by default. Swap records include window ID,
-pixel dimensions, frame number, and first-frame status; `window_resized` records
-help correlate stalls with resizing. No selected text or paths are recorded.
-
-Version 6 also times the terminal frame mailbox, painter lock, frame replacement
-and release, draw submission, fence creation, flush, and retirement polling.
-With GPU synchronization enabled, `terminal_gpu_before_sample` waits for earlier
-UI-context work, while `terminal_gpu_after_sample` measures completion of the
-terminal texture draw (including any shared-texture synchronization). The final
-`gpu_finish_finished` covers work queued after those draws. These additional
-diagnostic waits also change scheduling; compare against a run without GPU sync.
-
-Version 7 separates painter initialization, individual texture uploads, egui
-mesh batches, and renderer callbacks. `ui_gpu_before_uploads` isolates previously
-queued work; `ui_gpu_texture_uploaded`, `ui_gpu_mesh_batch`, and `ui_gpu_callback`
-measure completion after each corresponding operation. Upload details include
-dimensions and whether the upload is partial; batch details include primitive
-offsets, counts, and vertex counts. GPU-sync mode splits drawing at callbacks and
-waits between batches, so it changes scheduling further. Ordinary rendering keeps
-the original single `paint_primitives` call. CPU submission timings are available
-with tracing alone; all added GPU completion waits require GPU-sync mode.
-
-Version 8 records `gpu_before_swap_finished` (replacing `gpu_finish_finished`)
-and `gpu_after_swap_finished` immediately around the timed swap. Pre-upload GPU
-waits are skipped when there are no uploads or drawing, and texture-free waits
-run only when textures were freed, avoiding synchronization on otherwise empty
-frames. A slow post-swap wait isolates work or synchronization introduced across
-the presentation boundary; it does not alone identify the driver's internal cause.
+The trace records keyboard-event receipt (without key values), UI update and
+presentation durations, picker query changes (length only), source snapshots,
+displayed result counts, and pipe-batch processing. `input_seq` correlates events
+with the most recent received key press; it is not a hardware key timestamp or
+an exact per-query result identifier. Snapshot observation is recorded on the
+search worker, not at the filesystem producer's original publication instant.
+The trace does not record typed text, paths, or command output. It uses a bounded,
+nonblocking queue and may drop records under overload. Unset `GHOSTTY_INPUT_TRACE`
+and restart to disable it. Preview tracing and GPU diagnostic waits were removed.
 
 Use a Dynamic preview when Lua should choose the provider and external tools:
 
