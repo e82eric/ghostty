@@ -36,26 +36,53 @@ pub(crate) fn enabled() -> bool {
             let (sender, receiver) = mpsc::sync_channel::<String>(4096);
             let started = Instant::now();
             let unix_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_millis();
             std::thread::Builder::new()
                 .name("input-trace".into())
                 .spawn(move || {
-                    let _ = writeln!(file, "input_trace pid={} version=2 unix_ms={unix_ms}", std::process::id());
+                    let _ = writeln!(
+                        file,
+                        "input_trace pid={} version=2 unix_ms={unix_ms}",
+                        std::process::id()
+                    );
                     for line in receiver {
                         let _ = writeln!(file, "{line}");
                     }
                 })
                 .ok()?;
-            Some(Trace {
-                started,
-                sender,
-            })
+            Some(Trace { started, sender })
         })
         .is_some()
 }
 
 pub(crate) fn start() -> Option<Instant> {
     enabled().then(Instant::now)
+}
+
+/// Times sequential phases, including cleanup and early returns in the last phase.
+pub(crate) struct Phase {
+    stage: &'static str,
+    started: Option<Instant>,
+}
+impl Phase {
+    pub(crate) fn new(stage: &'static str) -> Self {
+        Self {
+            stage,
+            started: start(),
+        }
+    }
+    pub(crate) fn next(&mut self, stage: &'static str) {
+        record(self.stage, 0, self.started, "");
+        self.stage = stage;
+        self.started = start();
+    }
+}
+impl Drop for Phase {
+    fn drop(&mut self) {
+        record(self.stage, 0, self.started, "");
+    }
 }
 
 pub(crate) fn record(stage: &str, item: usize, started: Option<Instant>, detail: &str) {

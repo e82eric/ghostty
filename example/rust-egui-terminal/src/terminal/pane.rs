@@ -1429,6 +1429,7 @@ impl TerminalPane {
             .picker
             .as_mut()
             .and_then(|picker| picker.show_in_bounds(ui.ctx(), bounds));
+        let _picker_tail = crate::input_trace::Phase::new("pane_picker_action_dispatch");
         let mut application_action = None;
         if let Some(action) = action {
             if matches!(&action, crate::picker::Action::Custom(..))

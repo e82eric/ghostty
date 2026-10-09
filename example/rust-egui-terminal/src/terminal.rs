@@ -551,6 +551,7 @@ impl TerminalView {
         } else {
             &mut self.main
         };
+        let mut phases = crate::input_trace::Phase::new("terminal_handle_input");
         let input = if messages_open {
             pane::PaneInput {
                 keyboard_blocked: true,
@@ -560,15 +561,19 @@ impl TerminalView {
         } else {
             active_pane.handle_input(ui, active_bounds, &mut self.picker_bindings)
         };
+        phases.next("terminal_forward_input");
         active_pane.forward_input(
             ui,
             active_bounds,
             input.keyboard_blocked || shortcut_consumed || messages_open,
             input.suppress_forward || shortcut_consumed || messages_open,
         );
+        phases.next("terminal_status_ui");
         self.show_mode_status(ui, status_rect);
 
+        phases.next("terminal_floating_ui");
         self.show_floating(ui, rect, floating_rect);
+        phases.next("terminal_search_overlay");
         if floating_active {
             if let Some(floating) = self.floating.visible_mut() {
                 floating.show_search_overlay(ui.ctx(), floating_rect);
@@ -577,15 +582,19 @@ impl TerminalView {
             self.main.show_search_overlay(ui.ctx(), rect);
         }
 
+        phases.next("terminal_picker_callback");
         self.run_picker_callback(visible_id, gl);
+        phases.next("terminal_action_dispatch");
         if let Some(action) = input.action {
             self.execute_action(action, floating_active, ui.ctx(), gl);
         }
+        phases.next("terminal_clipboard");
         self.main.drain_clipboard(ui.ctx());
         for floating in &self.floating.entries {
             floating.drain_clipboard(ui.ctx());
         }
 
+        phases.next("terminal_close_and_toasts");
         if self.should_close() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }

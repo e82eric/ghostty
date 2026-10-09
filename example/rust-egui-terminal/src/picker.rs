@@ -532,6 +532,7 @@ impl Picker {
             }
         }
 
+        let mut tail = crate::input_trace::Phase::new("picker_resolved_preview");
         if let Some(preview) = &mut self.resolved_preview {
             if output.preview_rect.is_some() && !self.shared.is_closed() {
                 if let Some(selection) = selection {
@@ -562,6 +563,7 @@ impl Picker {
                 }
             }
         }
+        tail.next("picker_command_preview");
         if let Some(preview) = &mut self.command_preview {
             if output.preview_rect.is_some() && !self.shared.is_closed() {
                 if let Some(selection) = selection {
@@ -592,6 +594,7 @@ impl Picker {
                 }
             }
         }
+        tail.next("picker_event_dispatch");
         match output.event {
             Some(nfm_egui::PickerEvent::Cancelled) => Some(Action::Cancel),
             Some(nfm_egui::PickerEvent::CopyRequested(selection)) => {

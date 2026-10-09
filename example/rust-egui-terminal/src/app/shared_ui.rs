@@ -241,7 +241,7 @@ impl WindowUi {
     pub fn run(
         &mut self,
         window: &winit::window::Window,
-        ui: impl FnMut(&mut egui::Ui),
+        mut ui_callback: impl FnMut(&mut egui::Ui),
     ) -> (egui::FullOutput, bool) {
         egui_winit::update_viewport_info(&mut self.info, &self.egui_ctx, window, false);
         let mut input = self.state.take_egui_input(window);
@@ -250,9 +250,15 @@ impl WindowUi {
         // Keep State's transient focus/events, adding the native geometry.
         info.inner_rect = self.info.inner_rect;
         info.outer_rect = self.info.outer_rect;
-        let mut output = self.egui_ctx.run_ui(input, ui);
+        let mut phases = crate::input_trace::Phase::new("egui_run_ui");
+        let mut output = self.egui_ctx.run_ui(input, |ui| {
+            let _host_ui = crate::input_trace::Phase::new("host_ui_callback");
+            ui_callback(ui);
+        });
+        phases.next("egui_output_hook");
         self.changes.output_hook(&self.egui_ctx, &mut output);
         let changed = std::mem::take(&mut self.changes.changed);
+        phases.next("egui_viewport_commands");
         if let Some(viewport) = output.viewport_output.get_mut(&self.viewport_id) {
             egui_winit::process_viewport_commands(
                 &self.egui_ctx,
@@ -262,6 +268,7 @@ impl WindowUi {
                 &mut Vec::new(),
             );
         }
+        phases.next("egui_platform_output");
         self.state
             .handle_platform_output(window, std::mem::take(&mut output.platform_output));
         (output, changed)

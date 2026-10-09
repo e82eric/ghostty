@@ -782,6 +782,16 @@ timings are nested, so their durations must not be added together. Its trace
 also excludes item contents and uses a bounded, nonblocking writer queue.
 The NFM revision pinned in Cargo.toml includes these diagnostics.
 
+The Ghostty input trace also splits the work after `picker_show`: the
+`picker_*_preview` and `picker_event_dispatch` stages cover the wrapper;
+`pane_picker_action_dispatch` covers pane action handling; and `terminal_*`
+stages cover input forwarding, status, overlays, callbacks, clipboard, and
+toasts. `host_ui_callback` is nested inside `egui_run_ui`. A long `egui_run_ui`
+with a short callback points to egui work outside the application callback.
+`egui_output_hook`, `egui_viewport_commands`, and `egui_platform_output` cover
+the remaining work before `ui_update_finished`. These durations are nested
+and must not be summed as independent frame costs.
+
 Use a Dynamic preview when Lua should choose the provider and external tools:
 
 ```lua
