@@ -872,10 +872,15 @@ sample boundary is completed before classification. Oversized text is truncated
 within the 10 MiB byte budget, with a warning appended at the bottom and no split
 UTF-8 character. Lua owns path resolution,
 syntax choice, and binary metadata formatting.
-Standard Lua has no directory iterator: the Windows sample runs `cmd /u /c dir`
-through `preview.run` and displays its stdout as text after UTF-16LE decoding.
-The listing is not parsed or sorted by Lua. The selected directory is passed as the process working
-directory, without inserting its path into shell command text.
+Standard Lua has no directory iterator. The sample uses
+`preview.directory_items(path)`, a Rust-backed helper available only inside a
+Dynamic preview resolver. It returns entries sorted by name, each containing
+`name` and `is_directory`, or `nil` for a regular file. Missing paths and IO errors
+raise Lua errors. Hidden entries are included; symlinks are not followed when
+classifying entries. Lua formats the listing, appending `/` for directories.
+Enumeration checks cancellation between entries and bounds returned names by
+the preview byte limit and 100,000 entries. It runs on the Lua preview pool,
+without launching a subprocess. Native filesystem calls can still block one lane.
 No Rust-backed `preview.read_file`, `read_lines`, or `is_directory` API is provided.
 
 `preview.run {args={"ffmpeg.exe", ...}, cwd=params.cwd, timeout_ms=10000}` runs
@@ -895,7 +900,7 @@ timeout, and excessive output raise a Lua error. The default timeout is five sec
   Resolver closures retain separate state in each context: do not rely on mutable
   Lua state being shared between selection requests.
   The file-preview sample probes files with `io.open` before attempting a directory
-  listing, avoiding a command launch for ordinary readable files.
+  listing. Directory listing now uses the native helper without a command launch.
   Trace version 4 includes frame acquisition, painting, swap-start timing and
   whether disabling the swap interval succeeded. A driver can still block a swap
   even when the requested interval is zero.

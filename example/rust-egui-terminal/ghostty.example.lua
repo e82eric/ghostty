@@ -107,31 +107,13 @@ local function preview_read_text(path, display_path)
   return preview_measure("file_read", function() return preview_read_text_impl(path, display_path) end)
 end
 local function preview_directory(path, cwd)
-  -- The path is the process working directory, never interpolated into shell code.
-  local ok, result = pcall(preview.run, {
-    args={'cmd.exe','/d','/v:off','/u','/c',
-      'dir /a'},
-    cwd=preview_path(path,cwd), timeout_ms=10000,
-  })
-  -- A regular file cannot be used as a process working directory.
-  if not ok then return nil end
-  assert(result.exit_code == 0, result.stderr)
-  -- cmd /u emits UTF-16LE, including filenames outside the current code page.
-  local bytes, chars, index = result.stdout, {}, 1
-  while index < #bytes do
-    local code = bytes:byte(index) + bytes:byte(index+1) * 256
-    index = index + 2
-    if code >= 0xd800 and code <= 0xdbff and index < #bytes then
-      local low = bytes:byte(index) + bytes:byte(index+1) * 256
-      if low >= 0xdc00 and low <= 0xdfff then
-        code = 0x10000 + (code-0xd800)*1024 + low-0xdc00
-        index = index + 2
-      end
-    end
-    if code >= 0xd800 and code <= 0xdfff then code = 0xfffd end
-    chars[#chars+1] = utf8.char(code)
+  local items = preview.directory_items(preview_path(path, cwd))
+  if not items then return nil end
+  local lines = {}
+  for _, item in ipairs(items) do
+    lines[#lines + 1] = item.name .. (item.is_directory and "/" or "")
   end
-  return table.concat(chars)
+  return #lines > 0 and table.concat(lines, "\n") or "[Empty directory]"
 end
 
 local function file_preview()

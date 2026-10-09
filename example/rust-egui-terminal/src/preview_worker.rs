@@ -10,6 +10,52 @@ pub(crate) struct ConfigSource(pub String, pub String);
 pub(crate) struct FactoryContext(pub serde_json::Value);
 #[derive(Clone)]
 struct RequestContext(Cancellation, usize, usize);
+
+#[derive(serde::Serialize)]
+pub(crate) struct DirectoryItem {
+    name: String,
+    is_directory: bool,
+}
+
+pub(crate) fn directory_items(
+    path: &std::path::Path,
+    limit: usize,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<Vec<DirectoryItem>>, String> {
+    let check = || {
+        if cancelled() {
+            Err("Directory preview cancelled".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Ok(None);
+    }
+    let mut items = Vec::new();
+    let mut bytes = 0usize;
+    for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+        check()?;
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        bytes = bytes.saturating_add(name.len() + 2);
+        if bytes > limit || items.len() >= 100_000 {
+            return Err("Directory listing exceeds preview limits".into());
+        }
+        items.push(DirectoryItem {
+            name,
+            is_directory: entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir(),
+        });
+    }
+    check()?;
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Some(items))
+}
 // Bound outstanding jobs, including jobs whose OS process creation has not
 // returned yet. Cancellation releases Lua without abandoning child cleanup.
 static COMMAND_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -64,7 +110,7 @@ fn command_job<T: Send + 'static>(
 }
 pub(crate) fn install_ui_api(lua: &Lua) -> mlua::Result<()> {
     let helpers = lua.create_table()?;
-    for name in ["run", "measure"] {
+    for name in ["run", "measure", "directory_items"] {
         helpers.set(
             name,
             lua.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
@@ -346,6 +392,34 @@ fn install_helpers(lua: &Lua) -> mlua::Result<()> {
         return Ok(());
     }
     let helpers = lua.create_table()?;
+    helpers.set(
+        "directory_items",
+        lua.create_function(|lua, path: String| {
+            let RequestContext(cancel, limit, index) = lua
+                .app_data_ref::<RequestContext>()
+                .ok_or_else(|| {
+                    mlua::Error::external("preview.directory_items requires a preview request")
+                })?
+                .clone();
+            let started = crate::preview_trace::start();
+            let result =
+                directory_items(std::path::Path::new(&path), limit, || cancel.is_cancelled());
+            crate::preview_trace::record(
+                "directory",
+                index,
+                started,
+                if result.is_ok() {
+                    "ok=true"
+                } else {
+                    "ok=false"
+                },
+            );
+            match result.map_err(mlua::Error::external)? {
+                Some(items) => lua.to_value(&items),
+                None => Ok(mlua::Value::Nil),
+            }
+        })?,
+    )?;
     helpers.set(
         "measure",
         lua.create_function(|lua, (stage, callback): (String, mlua::Function)| {
