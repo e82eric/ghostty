@@ -34,17 +34,20 @@ pub(crate) fn enabled() -> bool {
                 }
             };
             let (sender, receiver) = mpsc::sync_channel::<String>(4096);
+            let started = Instant::now();
+            let unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
             std::thread::Builder::new()
                 .name("input-trace".into())
                 .spawn(move || {
-                    let _ = writeln!(file, "input_trace pid={} version=1", std::process::id());
+                    let _ = writeln!(file, "input_trace pid={} version=2 unix_ms={unix_ms}", std::process::id());
                     for line in receiver {
                         let _ = writeln!(file, "{line}");
                     }
                 })
                 .ok()?;
             Some(Trace {
-                started: Instant::now(),
+                started,
                 sender,
             })
         })

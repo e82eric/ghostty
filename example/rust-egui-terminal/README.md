@@ -760,6 +760,7 @@ launching Ghostty:
 
 ```powershell
 $env:GHOSTTY_INPUT_TRACE = "$env:TEMP\ghostty-input-timing.log"
+$env:NFM_PICKER_TRACE = "$env:TEMP\nfm-picker-timing.log"
 & .\ghostty_egui.exe
 ```
 
@@ -772,6 +773,14 @@ search worker, not at the filesystem producer's original publication instant.
 The trace does not record typed text, paths, or command output. It uses a bounded,
 nonblocking queue and may drop records under overload. Unset `GHOSTTY_INPUT_TRACE`
 and restart to disable it. Preview tracing and GPU diagnostic waits were removed.
+
+With an NFM build containing picker timing diagnostics, `NFM_PICKER_TRACE`
+records mailbox waits, selection restoration, old-result disposal, query
+submission, completions, input dispatch, and visible-row text and font layout.
+Both log headers include `unix_ms` to align their relative timestamps. NFM
+timings are nested, so their durations must not be added together. Its trace
+also excludes item contents and uses a bounded, nonblocking writer queue.
+The NFM revision pinned in Cargo.toml includes these diagnostics.
 
 Use a Dynamic preview when Lua should choose the provider and external tools:
 
