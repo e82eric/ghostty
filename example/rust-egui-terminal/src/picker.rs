@@ -33,6 +33,7 @@ pub(crate) struct Picker {
     pub(crate) typography: font::Typography,
     command_preview: Option<preview::CommandPreview>,
     resolved_preview: Option<preview::ResolvedPreview>,
+    traced_preview_selection: Option<(u64, usize)>,
     snapshot_preview: Option<Arc<preview::SnapshotPreview>>,
     callback: Option<std::rc::Rc<crate::lua_callbacks::Callback>>,
     request_params: std::collections::BTreeMap<String, String>,
@@ -291,6 +292,7 @@ impl Picker {
             snapshot_preview,
             command_preview,
             resolved_preview,
+            traced_preview_selection: None,
             callback: options.callback,
             request_params: options.params,
             enter_action: options.enter_action,
@@ -459,10 +461,30 @@ impl Picker {
             }
         }
         self.shared.set_error(self.error.lock().unwrap().clone());
+        let show_started = crate::preview_trace::start();
         let output = self
             .shared
             .show(ctx, self.placement(bounds), &appearance, !interactive);
         let selection = output.selection();
+        if crate::preview_trace::enabled() {
+            crate::preview_trace::record(
+                "picker_show",
+                selection.map_or(usize::MAX, |s| s.index),
+                show_started,
+                if output.busy {
+                    "busy=true"
+                } else {
+                    "busy=false"
+                },
+            );
+            if output.preview_rendered && output.preview_selection != self.traced_preview_selection
+            {
+                self.traced_preview_selection = output.preview_selection;
+                if let Some((_, index)) = output.preview_selection {
+                    crate::preview_trace::record("ui_preview_displayed", index, None, "");
+                }
+            }
+        }
         if let Some(preview) = &mut self.resolved_preview {
             if output.preview_rect.is_some() && !self.shared.is_closed() {
                 if let Some(selection) = selection {

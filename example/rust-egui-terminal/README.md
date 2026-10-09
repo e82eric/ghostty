@@ -755,6 +755,70 @@ continuation lines are joined. The default is `false`.
 
 ### Preview configuration
 
+To diagnose preview delays, set `GHOSTTY_PREVIEW_TRACE` to a log file path before
+starting Ghostty. The opt-in trace records picker frame durations, selection
+handoff, provider installation, NFM preview work, Lua queue/execution timings,
+and UI display. Version 2 also records full UI frames, egui updates, buffer swaps,
+repaint requests/receipt, command execution, and sample Lua file reads.
+Version 3 times OpenGL context acquisition directly and records command spawn,
+first stdout, cancellation detection and cleanup completion. Cancelled cleanup
+timing includes direct-child termination/reaping; it does not track descendant
+processes or separately time detached pipe-reader threads.
+Lua readers can use `preview.measure("file_read", function() ... end)` to record
+their own IO interval; results and errors propagate normally. It records item
+indexes and timings, not paths or content.
+Logging uses a separate thread and a bounded nonblocking queue; entries can be
+dropped under overload. Unset the variable to disable tracing.
+
+```powershell
+$env:GHOSTTY_PREVIEW_TRACE = "$env:TEMP\ghostty-preview-timing.log"
+& .\ghostty_egui.exe
+```
+
+To distinguish queued GPU work from presentation blocking, run once with the
+optional version-5 GPU synchronization diagnostic:
+
+```powershell
+$env:GHOSTTY_PREVIEW_TRACE = "$env:TEMP\ghostty-preview-gpu-timing.log"
+$env:GHOSTTY_PREVIEW_TRACE_GPU_SYNC = "1"
+& .\ghostty_egui.exe
+Remove-Item Env:GHOSTTY_PREVIEW_TRACE_GPU_SYNC
+```
+
+This calls `glFinish()` before each presented buffer swap and separately records
+`gpu_finish_finished` and `ui_swap_finished`. Slow GPU completion with a fast swap
+suggests pending GPU work or synchronization; fast completion with a slow swap
+points toward presentation or driver blocking. Compare with a normal run because
+the diagnostic changes GPU scheduling and can reduce performance. It requires
+tracing to be enabled and is disabled by default. Swap records include window ID,
+pixel dimensions, frame number, and first-frame status; `window_resized` records
+help correlate stalls with resizing. No selected text or paths are recorded.
+
+Version 6 also times the terminal frame mailbox, painter lock, frame replacement
+and release, draw submission, fence creation, flush, and retirement polling.
+With GPU synchronization enabled, `terminal_gpu_before_sample` waits for earlier
+UI-context work, while `terminal_gpu_after_sample` measures completion of the
+terminal texture draw (including any shared-texture synchronization). The final
+`gpu_finish_finished` covers work queued after those draws. These additional
+diagnostic waits also change scheduling; compare against a run without GPU sync.
+
+Version 7 separates painter initialization, individual texture uploads, egui
+mesh batches, and renderer callbacks. `ui_gpu_before_uploads` isolates previously
+queued work; `ui_gpu_texture_uploaded`, `ui_gpu_mesh_batch`, and `ui_gpu_callback`
+measure completion after each corresponding operation. Upload details include
+dimensions and whether the upload is partial; batch details include primitive
+offsets, counts, and vertex counts. GPU-sync mode splits drawing at callbacks and
+waits between batches, so it changes scheduling further. Ordinary rendering keeps
+the original single `paint_primitives` call. CPU submission timings are available
+with tracing alone; all added GPU completion waits require GPU-sync mode.
+
+Version 8 records `gpu_before_swap_finished` (replacing `gpu_finish_finished`)
+and `gpu_after_swap_finished` immediately around the timed swap. Pre-upload GPU
+waits are skipped when there are no uploads or drawing, and texture-free waits
+run only when textures were freed, avoiding synchronization on otherwise empty
+frames. A slow post-swap wait isolates work or synchronization introduced across
+the presentation boundary; it does not alone identify the driver's internal cause.
+
 Use a Dynamic preview when Lua should choose the provider and external tools:
 
 ```lua
@@ -781,8 +845,8 @@ preview = {
 }
 ```
 
-The Dynamic resolver runs on a dedicated Lua thread once per selection, returning
-owned data. It has a separate Lua state that evaluates the same configuration
+  The Dynamic resolver runs on a pool of dedicated Lua threads once per selection, returning
+  owned data. Each thread has a separate Lua state that evaluates the same configuration
 source immediately when configuration loading/reload creates the worker, retaining
 captured helpers and settings. Initialization runs in the background without waiting
 for the first preview request. Initialization errors are printed to stderr and
@@ -815,10 +879,26 @@ directory, without inserting its path into shell command text.
 No Rust-backed `preview.read_file`, `read_lines`, or `is_directory` API is provided.
 
 `preview.run {args={"ffmpeg.exe", ...}, cwd=params.cwd, timeout_ms=10000}` runs
-literal arguments and returns `{stdout=bytes, stderr=bytes, exit_code=number}`.
+  literal arguments and returns `{stdout=bytes, stderr=bytes, exit_code=number}`.
 Check `exit_code` before using output. Both streams are bounded; cancellation,
 timeout, and excessive output raise a Lua error. The default timeout is five seconds,
-with a maximum of two minutes.
+  with a maximum of two minutes.
+
+  Cancellation releases the Lua resolver while process creation or cleanup is
+  still pending. The background job retains responsibility for terminating and
+  reaping the direct child. At most four command jobs run concurrently across
+  preview workers; waiting for a slot also observes cancellation and timeout.
+  Each picker also has four independent Lua preview contexts, initialized on
+  load/reload. A blocking native Lua file read occupies one context while newer
+  requests can use another. Reads already in the OS finish naturally; canceled
+  results are discarded. If all four contexts are blocked, newer requests wait.
+  Resolver closures retain separate state in each context: do not rely on mutable
+  Lua state being shared between selection requests.
+  The file-preview sample probes files with `io.open` before attempting a directory
+  listing, avoiding a command launch for ordinary readable files.
+  Trace version 4 includes frame acquisition, painting, swap-start timing and
+  whether disabling the swap interval succeeded. A driver can still block a swap
+  even when the requested interval is zero.
 
 Return `{type="Ansi", bytes=result.stdout}` to preserve ANSI colors and text
 copy/search after running a command in Lua. Optional `center_line` follows the

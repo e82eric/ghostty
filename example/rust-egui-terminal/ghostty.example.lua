@@ -26,7 +26,11 @@ local function preview_path(path, cwd)
   if not cwd or path:match('^%a:') or path:match('^[\\/]') then return path end
   return cwd .. '/' .. path
 end
-local function preview_read_bytes(path)
+local function preview_measure(stage, callback)
+  if preview.measure then return preview.measure(stage, callback) end
+  return callback()
+end
+local function preview_read_bytes_impl(path)
   local file = assert(io.open(path, 'rb'))
   local ok, bytes = pcall(function()
     local bytes, read_error = file:read(10 * 1024 * 1024 + 1)
@@ -39,7 +43,10 @@ local function preview_read_bytes(path)
   assert(ok, bytes)
   return bytes
 end
-local function preview_read_text(path, display_path)
+local function preview_read_bytes(path)
+  return preview_measure("file_read", function() return preview_read_bytes_impl(path) end)
+end
+local function preview_read_text_impl(path, display_path)
   local file = assert(io.open(path, 'rb'))
   local ok, result = pcall(function()
     local function read(count)
@@ -96,6 +103,9 @@ local function preview_read_text(path, display_path)
   return result.text, result.binary
 end
 
+local function preview_read_text(path, display_path)
+  return preview_measure("file_read", function() return preview_read_text_impl(path, display_path) end)
+end
 local function preview_directory(path, cwd)
   -- The path is the process working directory, never interpolated into shell code.
   local ok, result = pcall(preview.run, {
@@ -130,7 +140,11 @@ local function file_preview()
     resolve = function(item, params)
       local path = item.value
       local extension = path:match("%.([^./\\]+)$") or ""
-      local directory = preview_directory(path, params.cwd)
+      -- Windows cannot open a directory as a file. Avoid spawning dir for files.
+      local probe = io.open(preview_path(path, params.cwd), "rb")
+      local directory
+      if probe then probe:close()
+      else directory = preview_directory(path, params.cwd) end
       if directory then
         return {type="Text",text=directory,syntax="PlainText",
           theme="gruvbox-dark"}

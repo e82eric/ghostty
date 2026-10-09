@@ -1,3 +1,7 @@
+thread_local! {
+    // WGL surface.is_current() checks only the context, not its drawable.
+    static CURRENT_GL_WINDOW: std::cell::Cell<Option<winit::window::WindowId>> = const { std::cell::Cell::new(None) };
+}
 use crate::native_error::{FatalError, FatalResult};
 use crate::presentation::Presentation;
 use std::cell::RefCell;
@@ -207,6 +211,7 @@ struct NativeWindow {
     egui: WindowUi,
     shell: Option<ShellApp>,
     presentation: Presentation,
+    presented_frames: u64,
 }
 
 impl NativeWindow {
@@ -235,6 +240,7 @@ impl NativeWindow {
             egui,
             shell: None,
             presentation,
+            presented_frames: 0,
         })
     }
 
@@ -244,11 +250,17 @@ impl NativeWindow {
     }
 
     fn redraw(&mut self) -> Result<(), FatalError> {
+        let frame_started = crate::preview_trace::start();
+        crate::preview_trace::record("ui_frame_started", 0, None, "");
+        let context_started = crate::preview_trace::start();
         self.gl_window.make_current()?;
+        crate::preview_trace::record("gl_context_acquired", 0, context_started, "");
         let shell = self.shell.as_mut().expect("terminal shell");
+        let update_started = crate::preview_trace::start();
         let (output, changed) = self
             .egui
             .run(self.gl_window.window(), |ui| shell.ui(ui, &self.gl));
+        crate::preview_trace::record("ui_update_finished", 0, update_started, "");
         self.presentation.ui_dirty |= changed;
         let now = Instant::now();
         let paced = self
@@ -256,9 +268,12 @@ impl NativeWindow {
             .present_deadline(now)
             .is_some_and(|due| due > now);
         if self.presentation.ready(now) {
+            let acquire_started = crate::preview_trace::start();
             self.presentation.frame_pending = shell.terminal.acquire_frames();
+            crate::preview_trace::record("terminal_frames_acquired", 0, acquire_started, "");
         }
         let presented = !paced && self.presentation.ready(now);
+        let paint_started = crate::preview_trace::start();
         if presented {
             unsafe {
                 let background = crate::colors::palette().background;
@@ -277,15 +292,70 @@ impl NativeWindow {
             self.shared_ui.borrow_mut().finish_output(output, None)?;
             shell.terminal.poll_retired(&self.gl);
         }
+        crate::preview_trace::record(
+            "ui_paint_finished",
+            0,
+            paint_started,
+            if presented {
+                "presented=true"
+            } else {
+                "presented=false"
+            },
+        );
         self.presentation
             .cleanup_pending(shell.terminal.retired_pending(), Instant::now());
         if presented {
+            let detail = if crate::preview_trace::enabled() {
+                let size = self.gl_window.window().inner_size();
+                format!(
+                    "window={:?} width={} height={} first_frame={} frame={} gpu_sync={}",
+                    self.gl_window.window().id(),
+                    size.width,
+                    size.height,
+                    self.presented_frames == 0,
+                    self.presented_frames,
+                    crate::preview_trace::gpu_sync_enabled()
+                )
+            } else {
+                String::new()
+            };
+            if crate::preview_trace::gpu_sync_enabled() {
+                let gpu_started = crate::preview_trace::start();
+                crate::preview_trace::record("gpu_before_swap_started", 0, None, &detail);
+                // Diagnostic only: wait for this context's queued GPU work before
+                // measuring presentation separately. Never enabled by tracing alone.
+                unsafe {
+                    self.gl.finish();
+                }
+                crate::preview_trace::record("gpu_before_swap_finished", 0, gpu_started, &detail);
+            }
             let started = Instant::now();
+            crate::preview_trace::record("ui_swap_started", 0, None, &detail);
             self.gl_window
                 .swap_buffers()
                 .fatal("present the application frame (swap OpenGL buffers)")?;
             self.presentation.presented(started);
+            crate::preview_trace::record("ui_swap_finished", 0, Some(started), &detail);
+            if crate::preview_trace::gpu_sync_enabled() {
+                let gpu_started = crate::preview_trace::start();
+                crate::preview_trace::record("gpu_after_swap_started", 0, None, &detail);
+                unsafe {
+                    self.gl.finish();
+                }
+                crate::preview_trace::record("gpu_after_swap_finished", 0, gpu_started, &detail);
+            }
+            self.presented_frames = self.presented_frames.saturating_add(1);
         }
+        crate::preview_trace::record(
+            "ui_frame_finished",
+            0,
+            frame_started,
+            if presented {
+                "presented=true"
+            } else {
+                "presented=false"
+            },
+        );
         Ok(())
     }
 
@@ -492,6 +562,19 @@ impl winit::application::ApplicationHandler<UserEvent> for NativeApp {
             return;
         }
         if let WindowEvent::Resized(size) = event {
+            if crate::preview_trace::enabled() {
+                crate::preview_trace::record(
+                    "window_resized",
+                    0,
+                    None,
+                    &format!(
+                        "window={:?} width={} height={}",
+                        window.gl_window.window().id(),
+                        size.width,
+                        size.height
+                    ),
+                );
+            }
             if let Err(error) = window.gl_window.make_current() {
                 self.fail(event_loop, error);
                 return;
@@ -520,6 +603,7 @@ impl winit::application::ApplicationHandler<UserEvent> for NativeApp {
         }
         match event {
             UserEvent::PickerWake { window_id } => {
+                crate::preview_trace::record("picker_wake_received", 0, None, "");
                 if let Some(window) = self.windows.get_mut(&window_id) {
                     // Service queued work immediately; only GPU presentation is paced.
                     window.gl_window.window().request_redraw();
@@ -543,6 +627,16 @@ impl winit::application::ApplicationHandler<UserEvent> for NativeApp {
                 }
             }
             UserEvent::Repaint(deadline) => {
+                crate::preview_trace::record(
+                    "repaint_received",
+                    0,
+                    None,
+                    if deadline <= Instant::now() {
+                        "due=true"
+                    } else {
+                        "due=false"
+                    },
+                );
                 for window in self.windows.values_mut() {
                     window.presentation.repaint_at(deadline);
                 }
@@ -751,9 +845,16 @@ impl GlutinWindowContext {
 
     fn make_current(&self) -> Result<(), FatalError> {
         use glutin::context::PossiblyCurrentGlContext as _;
+        if self.context.is_current()
+            && CURRENT_GL_WINDOW.with(|current| current.get() == Some(self._window.id()))
+        {
+            return Ok(());
+        }
         self.context
             .make_current(&self.surface)
-            .fatal("activate the window OpenGL context")
+            .fatal("activate the window OpenGL context")?;
+        CURRENT_GL_WINDOW.with(|current| current.set(Some(self._window.id())));
+        Ok(())
     }
 
     fn get_proc_address(&self, name: &std::ffi::CStr) -> *const c_void {
@@ -813,10 +914,21 @@ impl GlutinWindowSurface {
             graphics,
         };
         result.make_current()?;
-        if let Err(error) = result.surface.set_swap_interval(
+        let swap_interval_result = result.surface.set_swap_interval(
             &result.graphics.context,
             glutin::surface::SwapInterval::DontWait,
-        ) {
+        );
+        crate::preview_trace::record(
+            "gl_swap_interval",
+            0,
+            None,
+            if swap_interval_result.is_ok() {
+                "dont_wait=true"
+            } else {
+                "dont_wait=false"
+            },
+        );
+        if let Err(error) = swap_interval_result {
             crate::error_log::warning(
                 "graphics",
                 "Swap interval could not be disabled",
@@ -828,10 +940,19 @@ impl GlutinWindowSurface {
 
     fn make_current(&self) -> Result<(), FatalError> {
         use glutin::context::PossiblyCurrentGlContext as _;
+        // The context is shared by windows: checking only the context would
+        // incorrectly skip switching the drawable when another window was used.
+        if self.graphics.context.is_current()
+            && CURRENT_GL_WINDOW.with(|current| current.get() == Some(self.window.id()))
+        {
+            return Ok(());
+        }
         self.graphics
             .context
             .make_current(&self.surface)
-            .fatal("activate the shared OpenGL context for this window")
+            .fatal("activate the shared OpenGL context for this window")?;
+        CURRENT_GL_WINDOW.with(|current| current.set(Some(self.window.id())));
+        Ok(())
     }
 
     fn window(&self) -> &winit::window::Window {

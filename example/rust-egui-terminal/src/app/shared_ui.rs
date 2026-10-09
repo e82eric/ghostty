@@ -3,9 +3,20 @@ use crate::native_error::{FatalError, FatalResult};
 use crate::presentation::UiChanges;
 use egui::Plugin as _;
 use egui_winit::winit;
+use glow::HasContext as _;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+
+fn trace_gpu(gl: &glow::Context, stage: &str, detail: &str) {
+    if crate::preview_trace::gpu_sync_enabled() {
+        let started = crate::preview_trace::start();
+        unsafe {
+            gl.finish();
+        }
+        crate::preview_trace::record(stage, 0, started, detail);
+    }
+}
 
 pub(super) fn viewport_id(id: winit::window::WindowId) -> egui::ViewportId {
     egui::ViewportId::from_hash_of(id)
@@ -33,8 +44,12 @@ impl SharedUi {
                 )
             })
         });
+        trace_gpu(&gl, "ui_gpu_before_painter_init", "");
+        let started = crate::preview_trace::start();
         let painter = egui_glow::Painter::new(Arc::clone(&gl), "", None, true)
             .fatal("create the shared egui painter")?;
+        crate::preview_trace::record("ui_painter_initialized", 0, started, "");
+        trace_gpu(&gl, "ui_gpu_painter_initialized", "");
         let ctx = egui::Context::default();
         ctx.set_embed_viewports(false);
         crate::colors::COLORS.set(&ctx, crate::colors::palette());
@@ -43,6 +58,16 @@ impl SharedUi {
         // viewport. Wake all windows; per-window change tracking avoids swaps
         // for windows whose contents haven't changed.
         ctx.set_request_repaint_callback(move |info| {
+            crate::preview_trace::record(
+                "repaint_requested",
+                0,
+                None,
+                if info.delay.is_zero() {
+                    "immediate=true"
+                } else {
+                    "immediate=false"
+                },
+            );
             if let Some(deadline) = Instant::now().checked_add(info.delay) {
                 let _ = proxy.send_event(UserEvent::Repaint(deadline));
             }
@@ -79,18 +104,103 @@ impl SharedUi {
         mut output: egui::FullOutput,
         dimensions: Option<[u32; 2]>,
     ) -> Result<(), FatalError> {
+        if dimensions.is_some()
+            || output
+                .textures_delta
+                .set
+                .values()
+                .any(|deltas| !deltas.is_empty())
+        {
+            trace_gpu(&self.gl, "ui_gpu_before_uploads", "");
+        }
         for (id, deltas) in output.textures_delta.set.drain() {
             for delta in deltas {
+                let detail = if crate::preview_trace::enabled() {
+                    let [width, height] = delta.image.size();
+                    format!(
+                        "width={width} height={height} partial={}",
+                        delta.pos.is_some()
+                    )
+                } else {
+                    String::new()
+                };
+                let started = crate::preview_trace::start();
                 self.painter.set_texture(id, &delta);
+                crate::preview_trace::record("ui_texture_uploaded", 0, started, &detail);
+                trace_gpu(&self.gl, "ui_gpu_texture_uploaded", &detail);
             }
         }
         if let Some(dimensions) = dimensions {
+            let started = crate::preview_trace::start();
             let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-            self.painter
-                .paint_primitives(dimensions, output.pixels_per_point, &primitives);
+            crate::preview_trace::record("ui_tessellated", 0, started, "");
+            if crate::preview_trace::gpu_sync_enabled() {
+                // Diagnostic only: split at callbacks so GPU completion can be
+                // attributed to mesh batches versus host renderer callbacks.
+                let mut offset = 0;
+                while offset < primitives.len() {
+                    let callback = matches!(
+                        &primitives[offset].primitive,
+                        egui::epaint::Primitive::Callback(_)
+                    );
+                    let count = if callback {
+                        1
+                    } else {
+                        primitives[offset..]
+                            .iter()
+                            .take_while(|primitive| {
+                                matches!(&primitive.primitive, egui::epaint::Primitive::Mesh(_))
+                            })
+                            .count()
+                    };
+                    let batch = &primitives[offset..offset + count];
+                    let vertices: usize = batch
+                        .iter()
+                        .map(|primitive| match &primitive.primitive {
+                            egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                            _ => 0,
+                        })
+                        .sum();
+                    let detail = format!("offset={offset} primitives={count} vertices={vertices}");
+                    let started = crate::preview_trace::start();
+                    self.painter
+                        .paint_primitives(dimensions, output.pixels_per_point, batch);
+                    crate::preview_trace::record(
+                        if callback {
+                            "ui_callback_submitted"
+                        } else {
+                            "ui_mesh_batch_submitted"
+                        },
+                        0,
+                        started,
+                        &detail,
+                    );
+                    trace_gpu(
+                        &self.gl,
+                        if callback {
+                            "ui_gpu_callback"
+                        } else {
+                            "ui_gpu_mesh_batch"
+                        },
+                        &detail,
+                    );
+                    offset += count;
+                }
+            } else {
+                let started = crate::preview_trace::start();
+                self.painter
+                    .paint_primitives(dimensions, output.pixels_per_point, &primitives);
+                crate::preview_trace::record("ui_draw_submitted", 0, started, "");
+            }
         }
+        let started = crate::preview_trace::start();
+        let freed_textures = !output.textures_delta.free.is_empty();
         for id in output.textures_delta.free.drain() {
             self.painter.free_texture(id);
+        }
+        crate::preview_trace::record("ui_textures_freed", 0, started, "");
+        if freed_textures {
+            trace_gpu(&self.gl, "ui_gpu_textures_freed", "");
         }
         Ok(())
     }

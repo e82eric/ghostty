@@ -13,12 +13,14 @@ struct OwnedFrame {
 
 impl OwnedFrame {
     unsafe fn release(self, gl: &glow::Context) {
+        let started = crate::preview_trace::start();
         unsafe {
             if let Some(fence) = self.fence {
                 gl.delete_sync(glow::NativeFence(fence as _));
             }
             ghostty_egui_host_release_frame(self.handle as *mut c_void);
         }
+        crate::preview_trace::record("terminal_release_frame", 0, started, "");
     }
 }
 
@@ -118,6 +120,8 @@ impl TerminalPainter {
     }
 
     pub(crate) fn poll_retired(&mut self, gl: &glow::Context) {
+        let started = crate::preview_trace::start();
+        let pending = self.retired.len();
         unsafe {
             let mut i = 0;
             while i < self.retired.len() {
@@ -130,6 +134,18 @@ impl TerminalPainter {
                 }
             }
         }
+        if crate::preview_trace::enabled() && pending > 0 {
+            crate::preview_trace::record(
+                "terminal_retirement_poll",
+                0,
+                started,
+                &format!(
+                    "pending={} released={}",
+                    pending,
+                    pending - self.retired.len()
+                ),
+            );
+        }
     }
 
     pub(crate) fn paint(&mut self, gl: &glow::Context) {
@@ -141,6 +157,14 @@ impl TerminalPainter {
             return;
         };
         self.poll_retired(gl);
+        if crate::preview_trace::gpu_sync_enabled() {
+            let started = crate::preview_trace::start();
+            unsafe {
+                gl.finish();
+            }
+            crate::preview_trace::record("terminal_gpu_before_sample", 0, started, "");
+        }
+        let draw_started = crate::preview_trace::start();
         unsafe {
             gl.disable(glow::BLEND);
             gl.use_program(Some(self.program));
@@ -149,19 +173,37 @@ impl TerminalPainter {
             gl.uniform_1_i32(self.texture_uniform.as_ref(), 0);
             gl.bind_vertex_array(Some(self.vertex_array));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            crate::preview_trace::record("terminal_draw_submitted", 0, draw_started, "");
+            if crate::preview_trace::gpu_sync_enabled() {
+                let started = crate::preview_trace::start();
+                gl.finish();
+                crate::preview_trace::record("terminal_gpu_after_sample", 0, started, "");
+            }
 
             let frame = self.current.as_mut().expect("current frame");
+            let fence_started = crate::preview_trace::start();
             if let Some(fence) = frame.fence.take() {
                 gl.delete_sync(glow::NativeFence(fence as _));
             }
             if let Ok(fence) = gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
+                crate::preview_trace::record("terminal_fence_created", 0, fence_started, "ok=true");
+                let started = crate::preview_trace::start();
                 gl.flush();
+                crate::preview_trace::record("terminal_flush", 0, started, "");
                 frame.fence = Some(fence.0 as usize);
             } else {
+                crate::preview_trace::record(
+                    "terminal_fence_created",
+                    0,
+                    fence_started,
+                    "ok=false",
+                );
                 // Fence creation is required for asynchronous retirement. If
                 // the driver rejects it, complete this read before allowing
                 // the texture to be returned to Ghostty's pool.
+                let started = crate::preview_trace::start();
                 gl.finish();
+                crate::preview_trace::record("terminal_fence_fallback_finish", 0, started, "");
             }
         }
     }

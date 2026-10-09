@@ -406,10 +406,27 @@ impl TerminalPane {
             .frame_ready_pending
             .store(false, Ordering::Release);
         let mut frame = GlFrame::default();
-        if !unsafe { ghostty_ffi::ghostty_egui_host_take_frame(self.host, &mut frame) } {
+        let started = crate::preview_trace::start();
+        let acquired = unsafe { ghostty_ffi::ghostty_egui_host_take_frame(self.host, &mut frame) };
+        crate::preview_trace::record(
+            "terminal_take_frame",
+            0,
+            started,
+            if acquired {
+                "acquired=true"
+            } else {
+                "acquired=false"
+            },
+        );
+        if !acquired {
             return false;
         }
-        self.painter.lock().replace_frame(frame);
+        let started = crate::preview_trace::start();
+        let mut painter = self.painter.lock();
+        crate::preview_trace::record("terminal_painter_lock", 0, started, "");
+        let started = crate::preview_trace::start();
+        painter.replace_frame(frame);
+        crate::preview_trace::record("terminal_replace_frame", 0, started, "");
         true
     }
 

@@ -2234,12 +2234,15 @@ mod tests {
     #[test]
     fn lua_file_preview_samples_binary_files_and_preserves_utf8_boundaries() {
         let source = include_str!("../ghostty.example.lua");
-        let start = source.find("local function preview_read_text(").unwrap();
+        let start = source.find("local function preview_measure(").unwrap();
         let end = source[start..]
             .find("local function preview_directory(")
             .unwrap()
             + start;
         let lua = mlua::Lua::new();
+        lua.globals()
+            .set("preview", lua.create_table().unwrap())
+            .unwrap();
         let reader: mlua::Function = lua
             .load(format!("{}\nreturn preview_read_text", &source[start..end]))
             .eval()
