@@ -792,12 +792,19 @@ with a short callback points to egui work outside the application callback.
 the remaining work before `ui_update_finished`. These durations are nested
 and must not be summed as independent frame costs.
 
+Native IME composition is disabled in this host. Normal keyboard input, pasted
+Unicode text, and Unicode display remain supported. IME viewport commands and
+platform composition requests are suppressed to avoid Windows IME calls during
+typing.
+
 `platform_output_started` records counts of clipboard and URL commands and IME
 presence, without recording their contents. Nested `platform_ime_allowed` and
 `platform_ime_cursor_area` timings observe egui-winit's existing profiling scopes.
 They measure IME toggling and cursor-area updates without changing platform
 behavior. Subtract their durations from `egui_platform_output` to examine the
 remaining cursor, clipboard, composition interruption, and IME-purpose work.
+With IME disabled, `ime=false` is expected and the nested IME timings should
+not appear.
 
 Use a Dynamic preview when Lua should choose the provider and external tools:
 

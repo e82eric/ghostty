@@ -214,6 +214,8 @@ impl WindowUi {
         shared: &SharedUi,
     ) -> Self {
         let viewport_id = viewport_id(window.id());
+        // This host uses direct keyboard input; disable native IME once per window.
+        window.set_ime_allowed(false);
         Self {
             egui_ctx: shared.ctx.clone(),
             viewport_id,
@@ -260,6 +262,14 @@ impl WindowUi {
         let changed = std::mem::take(&mut self.changes.changed);
         phases.next("egui_viewport_commands");
         if let Some(viewport) = output.viewport_output.get_mut(&self.viewport_id) {
+            viewport.commands.retain(|command| {
+                !matches!(
+                    command,
+                    egui::ViewportCommand::IMEAllowed(_)
+                        | egui::ViewportCommand::IMERect(_)
+                        | egui::ViewportCommand::IMEPurpose(_)
+                )
+            });
             egui_winit::process_viewport_commands(
                 &self.egui_ctx,
                 &mut self.info,
@@ -269,7 +279,9 @@ impl WindowUi {
             );
         }
         phases.next("egui_platform_output");
-        let platform_output = std::mem::take(&mut output.platform_output);
+        let mut platform_output = std::mem::take(&mut output.platform_output);
+        // Prevent egui-winit from enabling IME or interrupting composition each frame.
+        platform_output.ime = None;
         if crate::input_trace::enabled() {
             let (mut copy_text, mut copy_image, mut open_url) = (0, 0, 0);
             for command in &platform_output.commands {
