@@ -4,6 +4,10 @@ use std::{
     sync::{OnceLock, mpsc},
     time::Instant,
 };
+mod platform;
+pub(crate) fn platform_output<R>(run: impl FnOnce() -> R) -> R {
+    platform::observe(run)
+}
 
 struct Trace {
     started: Instant,

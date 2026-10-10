@@ -269,8 +269,33 @@ impl WindowUi {
             );
         }
         phases.next("egui_platform_output");
-        self.state
-            .handle_platform_output(window, std::mem::take(&mut output.platform_output));
+        let platform_output = std::mem::take(&mut output.platform_output);
+        if crate::input_trace::enabled() {
+            let (mut copy_text, mut copy_image, mut open_url) = (0, 0, 0);
+            for command in &platform_output.commands {
+                match command {
+                    egui::OutputCommand::CopyText(_) => copy_text += 1,
+                    egui::OutputCommand::CopyImage(_) => copy_image += 1,
+                    egui::OutputCommand::OpenUrl(_) => open_url += 1,
+                }
+            }
+            crate::input_trace::record(
+                "platform_output_started",
+                0,
+                None,
+                &format!(
+                    "copy_text={copy_text} copy_image={copy_image} open_url={open_url} ime={} interrupt_composition={}",
+                    platform_output.ime.is_some(),
+                    platform_output
+                        .ime
+                        .as_ref()
+                        .is_some_and(|ime| ime.should_interrupt_composition),
+                ),
+            );
+        }
+        crate::input_trace::platform_output(|| {
+            self.state.handle_platform_output(window, platform_output)
+        });
         (output, changed)
     }
 }
