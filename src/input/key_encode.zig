@@ -1654,21 +1654,6 @@ test "kitty: report alternates colon (shift+';')" {
     try testing.expectEqualStrings("\x1b[59:58;2;58u", writer.buffered());
 }
 
-test "kitty: consumed shift emits translated punctuation" {
-    var buf: [128]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buf);
-    try kitty(&writer, .{
-        .key = .bracket_left,
-        .mods = .{ .shift = true },
-        .consumed_mods = .{ .shift = true },
-        .utf8 = "{",
-        .unshifted_codepoint = '[',
-    }, .{
-        .kitty_flags = .{ .disambiguate = true },
-    });
-    try testing.expectEqualStrings("{", writer.buffered());
-}
-
 test "kitty: report alternates with ru layout" {
     var buf: [128]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
@@ -2872,4 +2857,8 @@ test "ctrlseq: right ctrl c" {
         .sides = .{ .ctrl = .right },
     });
     try testing.expectEqual(@as(u8, 0x03), seq.?);
+}
+
+test "kitty: consumed shift emits translated punctuation" {
+    try @import("host_key_tests.zig").consumedShift(kitty);
 }

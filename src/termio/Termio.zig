@@ -546,21 +546,14 @@ pub fn resize(
             },
         );
 
-        if (!@import("builtin").is_test and global.logging().stderr) {
-            log.info("resize diagnostic reflow_complete rows={} cols={} cursor_row={} cursor_col={}", .{
-                grid_size.rows,                            grid_size.columns,
-                self.terminal.screens.active.cursor.y + 1, self.terminal.screens.active.cursor.x + 1,
-            });
-        }
+        @import("resize_diagnostics.zig").reflow(log, &self.terminal, grid_size);
     }
 
     // Do not hold the terminal lock across the backend call: output parsing
     // must remain able to make progress while ConPTY handles its signal pipe.
     if (comptime @import("builtin").os.tag == .windows) {
         try self.backend.resize(grid_size, size.terminal());
-        if (!@import("builtin").is_test and global.logging().stderr) {
-            log.info("resize diagnostic conpty_notified rows={} cols={}", .{ grid_size.rows, grid_size.columns });
-        }
+        @import("resize_diagnostics.zig").notified(log, grid_size);
     }
 
     // Report only after both the terminal and backend have been resized.

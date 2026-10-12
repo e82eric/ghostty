@@ -184,17 +184,11 @@ command_timer: ?std.Io.Timestamp = null,
 /// Search state
 search: ?Search = null,
 
-/// Independently owned frozen terminal used for modal presentation.
-presentation_snapshot: ?*terminal.Terminal = null,
-presentation_snapshot_generation: u64 = 0,
-snapshot_decoration_viewport: ?SnapshotViewport = null,
-/// Last physical row read from the frozen snapshot, for nearby text queries.
-snapshot_text_row_anchor: ?struct { pin: terminal.PageList.Pin, row: u64 } = null,
+/// Host-owned modal presentation state.
+snapshot: @import("surface/Snapshot.zig") = .{},
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
-
-pub const SnapshotViewport = struct { start: usize, end: usize };
 
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
@@ -234,68 +228,6 @@ const Search = struct {
         self.state.deinit();
     }
 };
-
-/// Capture an independently owned terminal while holding the terminal lock.
-fn createSearchSnapshotLocked(self: *Surface) !*terminal.Terminal {
-    const result = try self.alloc.create(terminal.Terminal);
-    errdefer self.alloc.destroy(result);
-    result.* = try terminal.PresentationSnapshot.capture(
-        self.alloc,
-        global.io(),
-        self.renderer_state.terminal,
-    );
-    return result;
-}
-/// Enter frozen presentation mode. Repeated calls retain the current
-/// snapshot so its coordinates remain stable.
-pub fn beginPresentationSnapshot(self: *Surface) !void {
-    self.renderer_state.mutex.lockUncancelable(global.io());
-    defer self.renderer_state.mutex.unlock(global.io());
-    if (self.presentation_snapshot != null) return;
-    const frozen = try self.createSearchSnapshotLocked();
-    self.presentation_snapshot = frozen;
-    self.renderer_state.presentation_terminal = frozen;
-    self.snapshot_text_row_anchor = null;
-    self.presentation_snapshot_generation +%= 1;
-    if (self.presentation_snapshot_generation == 0) {
-        self.presentation_snapshot_generation = 1;
-    }
-    self.queueRender() catch |err| {
-        log.warn("failed to render after beginning snapshot mode err={}", .{err});
-    };
-}
-
-/// Leave frozen presentation mode. The renderer is detached before snapshot
-/// pages are destroyed. Built-in search has an independent lifecycle.
-pub fn endPresentationSnapshot(self: *Surface) void {
-    self.renderer_state.mutex.lockUncancelable(global.io());
-    const snapshot_terminal = self.presentation_snapshot orelse {
-        self.renderer_state.mutex.unlock(global.io());
-        return;
-    };
-    if (self.renderer_state.presentation_terminal == snapshot_terminal) {
-        self.renderer_state.presentation_terminal = null;
-    }
-    self.renderer_state.terminal.flags.dirty.clear = true;
-    self.presentation_snapshot = null;
-    self.snapshot_decoration_viewport = null;
-    self.snapshot_text_row_anchor = null;
-    self.renderer_state.mutex.unlock(global.io());
-
-    // Clear decorations before asking for the first live frame. The renderer
-    // drains its mailbox before updating a frame, so no snapshot range is
-    // evaluated against the live terminal.
-    const empty_arena = std.heap.ArenaAllocator.init(self.alloc);
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
-        .snapshot_decorations = .{ .arena = empty_arena, .layers = &.{} },
-    }, .{ .forever = {} });
-
-    snapshot_terminal.deinit(self.alloc);
-    self.alloc.destroy(snapshot_terminal);
-    self.queueRender() catch |err| {
-        log.warn("failed to render after ending snapshot mode err={}", .{err});
-    };
-}
 
 /// Mouse state for the surface.
 const Mouse = struct {
@@ -880,7 +812,7 @@ pub fn init(
 pub fn deinit(self: *Surface) void {
     // Stop search thread
     if (self.search) |*s| s.deinit();
-    self.endPresentationSnapshot();
+    self.snapshot.end(self);
 
     // Stop rendering thread
     {
@@ -2667,18 +2599,6 @@ pub fn sizeCallback(self: *Surface, size: apprt.SurfaceSize) !void {
 }
 
 fn resize(self: *Surface, size: rendererpkg.ScreenSize) !void {
-    // Snapshot coordinates deliberately do not reflow. End the modal search
-    // before applying a new size so the caller never observes coordinates
-    // that refer to a different layout.
-    if (self.presentation_snapshot != null) {
-        self.endPresentationSnapshot();
-        _ = try self.rt_app.performAction(
-            .{ .surface = self },
-            .end_search,
-            {},
-        );
-    }
-
     // Save our screen size
     self.size.screen = size;
     self.balancePaddingIfNeeded();
@@ -3749,17 +3669,7 @@ pub fn scrollCallback(
 
     // log.info("SCROLL: delta_y={} delta_x={}", .{ y.delta, x.delta });
 
-    // Modal presentation scrolls the frozen screen. The live PTY continues to
-    // advance independently and must not receive snapshot navigation input.
-    if (self.presentation_snapshot != null) {
-        self.renderer_state.mutex.lockUncancelable(global.io());
-        if (self.renderer_state.presentation_terminal) |snapshot| {
-            if (y.delta != 0) {
-                snapshot.screens.active.scroll(.{ .delta_row = y.delta * -1 });
-                snapshot.flags.dirty.clear = true;
-            }
-        }
-        self.renderer_state.mutex.unlock(global.io());
+    if (self.snapshot.scroll(self, y.delta)) {
         try self.queueRender();
         return;
     }

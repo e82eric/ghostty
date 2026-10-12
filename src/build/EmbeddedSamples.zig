@@ -80,6 +80,7 @@ pub fn add(
         });
         cargo.has_side_effects = true;
         cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+        cargo.setEnvironmentVariable("GHOSTTY_LIB_DIR", b.getInstallPath(.lib, ""));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt-static");
@@ -127,6 +128,7 @@ pub fn add(
         });
         cargo.has_side_effects = true;
         cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
+        cargo.setEnvironmentVariable("GHOSTTY_LIB_DIR", b.getInstallPath(.lib, ""));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
         cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt");
@@ -149,4 +151,17 @@ pub fn add(
         egui_exe_install.step.dependOn(&cargo.step);
         egui_step.dependOn(&egui_exe_install.step);
     }
+}
+
+/// Additional GL symbols and WGL support for native Windows embedding.
+pub fn linkWindowsOpenGL(b: *std.Build, step: *std.Build.Step.Compile) void {
+    step.root_module.addIncludePath(b.path("vendor/glad/include"));
+    if (step.kind == .lib) step.root_module.addCSourceFile(.{
+        .file = b.path("vendor/glad/src/gl.c"),
+        .flags = &.{},
+    });
+    step.root_module.addCSourceFile(.{ .file = b.path("src/renderer/opengl/wgl.c"), .flags = &.{} });
+    step.root_module.linkSystemLibrary("opengl32", .{});
+    step.root_module.linkSystemLibrary("gdi32", .{});
+    step.root_module.linkSystemLibrary("user32", .{});
 }

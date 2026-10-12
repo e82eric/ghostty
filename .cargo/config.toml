@@ -1,13 +1,3 @@
 [env]
 GHOSTTY_ROOT = { value = ".", relative = true }
 
-# Use the companion checkout while the FullPane API is under development.
-[patch."https://github.com/e82eric/npicker"]
-nfm-egui = { path = "G:/src/RustWin32Host/nfm-egui" }
-nfm-picker-sources = { path = "G:/src/RustWin32Host/nfm-picker-sources" }
-nfm_search_core = { path = "G:/src/RustWin32Host/nfm-search-core" }
-nfm-preview-file = { path = "G:/src/RustWin32Host/nfm-preview-file" }
-nfm-preview-text = { path = "G:/src/RustWin32Host/nfm-preview-text" }
-nfm-preview-vt = { path = "G:/src/RustWin32Host/nfm-preview-vt" }
-nfm-preview-command = { path = "G:/src/RustWin32Host/nfm-preview-command" }
-nfm_file_system = { path = "G:/src/RustWin32Host/nfm-file-system" }

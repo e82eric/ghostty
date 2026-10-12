@@ -2,10 +2,9 @@
 //! mutated. The renderer supplies its normal cell drawing machinery.
 const std = @import("std");
 const terminal = @import("../terminal/main.zig");
-const Message = @import("message.zig").Message;
 const Self = @This();
 
-value: ?Message.SnapshotDecorations = null,
+value: ?@import("SnapshotDecorations.zig") = null,
 highlights_dirty: bool = false,
 glyphs_dirty: bool = false,
 
@@ -14,7 +13,7 @@ pub fn deinit(self: *Self) void {
     self.* = .{};
 }
 
-pub fn replace(self: *Self, value: Message.SnapshotDecorations) void {
+pub fn replace(self: *Self, value: @import("SnapshotDecorations.zig")) void {
     const old_text = if (self.value) |old| old.text.len else 0;
     self.glyphs_dirty = self.glyphs_dirty or old_text > 0 or value.text.len > 0;
     if (self.value) |*old| old.arena.deinit();
@@ -41,7 +40,7 @@ pub fn updateHighlights(self: *Self, alloc: std.mem.Allocator, state: anytype) v
     }
 }
 
-pub fn styleForTag(self: *const Self, tag: u8) ?Message.DecorationStyle {
+pub fn styleForTag(self: *const Self, tag: u8) ?@import("SnapshotDecorations.zig").Style {
     if (tag < 2) return null;
     const value = self.value orelse return null;
     const index = tag - 2;
@@ -49,7 +48,7 @@ pub fn styleForTag(self: *const Self, tag: u8) ?Message.DecorationStyle {
     return value.layers[index].style;
 }
 
-pub fn textAt(self: *const Self, x: u16, y: u16) ?Message.DecorationText {
+pub fn textAt(self: *const Self, x: u16, y: u16) ?@import("SnapshotDecorations.zig").Text {
     const value = self.value orelse return null;
     var lo: usize = 0;
     var hi = value.text.len;
@@ -64,7 +63,7 @@ pub fn textAt(self: *const Self, x: u16, y: u16) ?Message.DecorationText {
 }
 
 /// Use the renderer's font atlas and GPU cell buffers for replacement glyphs.
-pub fn drawText(r: anytype, text: Message.DecorationText, color: terminal.color.RGB) !void {
+pub fn drawText(r: anytype, text: @import("SnapshotDecorations.zig").Text, color: terminal.color.RGB) !void {
     const render = (try r.font_grid.renderCodepoint(r.alloc, text.codepoint, if (text.bold) .bold else .regular, .text, .{
         .cell_width = 1,
         .grid_metrics = r.grid_metrics,
@@ -84,7 +83,7 @@ pub fn drawText(r: anytype, text: Message.DecorationText, color: terminal.color.
 test "SnapshotOverrides removing text invalidates glyphs but ranges alone do not" {
     var overrides: Self = .{};
     defer overrides.deinit();
-    const text: Message.DecorationText = .{
+    const text: @import("SnapshotDecorations.zig").Text = .{
         .coord = .{ .x = 2, .y = 3 },
         .codepoint = 'A',
         .style = .{},
@@ -118,7 +117,7 @@ test "SnapshotOverrides removing text invalidates glyphs but ranges alone do not
 test "SnapshotOverrides lookup preserves upstream tags and exact cell positions" {
     var overrides: Self = .{};
     defer overrides.deinit();
-    const style: Message.DecorationStyle = .{ .foreground = .{ .r = 215, .g = 153, .b = 33 } };
+    const style: @import("SnapshotDecorations.zig").Style = .{ .foreground = .{ .r = 215, .g = 153, .b = 33 } };
     overrides.replace(.{
         .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
         .layers = &.{.{ .style = style, .ranges = &.{} }},
