@@ -22,4 +22,5 @@ pub const Text = struct {
     codepoint: u21,
     style: Style,
     bold: bool = false,
+    underline: bool = false,
 };

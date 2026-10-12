@@ -428,7 +428,7 @@ export fn ghostty_surface_snapshot_apply_decorations(
     }
     var core_text: std.ArrayList(@import("../renderer/SnapshotDecorations.zig").Text) = .empty;
     for (text) |item| {
-        if (item.style.flags & ~@as(u32, 3) != 0) return false;
+        if (item.style.flags & ~@as(u32, 7) != 0) return false;
         if (item.codepoint < 0x20 or item.codepoint > 0x7e) return false;
         const cell = item.cell;
         if (cell.y < viewport.start or cell.y >= viewport.end) continue;
@@ -438,6 +438,7 @@ export fn ghostty_surface_snapshot_apply_decorations(
             .codepoint = @intCast(item.codepoint),
             .style = item.style.toCore(),
             .bold = item.bold,
+            .underline = item.style.flags & 4 != 0,
         }) catch |err| {
             @import("../c_api_error.zig").set(err);
             return false;

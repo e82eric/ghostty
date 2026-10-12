@@ -1478,7 +1478,8 @@ typedef struct {
  * this initial API; underlying snapshot text is never changed. Style flags
  * use the same foreground/background semantics as range decorations. Colors
  * not overridden by style use the original cell colors, excluding range
- * decorations. bold applies only to this replacement glyph.
+ * decorations. Style flag bit 2 enables a single underline in the replacement
+ * foreground color. bold applies only to this replacement glyph.
  * Overrides must be nonoverlapping and are clipped to the viewport. */
 typedef struct {
     ghostty_snapshot_cell_s cell;
