@@ -64,6 +64,21 @@ pub fn textAt(self: *const Self, x: u16, y: u16) ?@import("SnapshotDecorations.z
 
 /// Use the renderer's font atlas and GPU cell buffers for replacement glyphs.
 pub fn drawText(r: anytype, text: @import("SnapshotDecorations.zig").Text, color: terminal.color.RGB) !void {
+    if (text.underline) {
+        const font = @import("../font/main.zig");
+        const line = try r.font_grid.renderGlyph(r.alloc, font.sprite_index, @intFromEnum(font.Sprite.underline), .{
+            .cell_width = 1,
+            .grid_metrics = r.grid_metrics,
+        });
+        try r.cells.add(r.alloc, .underline, .{
+            .atlas = .grayscale,
+            .grid_pos = .{ text.coord.x, @intCast(text.coord.y) },
+            .color = .{ color.r, color.g, color.b, 255 },
+            .glyph_pos = .{ line.glyph.atlas_x, line.glyph.atlas_y },
+            .glyph_size = .{ line.glyph.width, line.glyph.height },
+            .bearings = .{ @intCast(line.glyph.offset_x), @intCast(line.glyph.offset_y) },
+        });
+    }
     const render = (try r.font_grid.renderCodepoint(r.alloc, text.codepoint, if (text.bold) .bold else .regular, .text, .{
         .cell_width = 1,
         .grid_metrics = r.grid_metrics,
