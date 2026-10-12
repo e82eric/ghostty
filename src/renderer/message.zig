@@ -62,7 +62,7 @@ pub const Message = union(enum) {
     search_selected_match: ?SearchMatch,
 
     /// Atomically replace all presentation-only decoration layers.
-    snapshot_decorations: SnapshotDecorations,
+    snapshot_decorations: @import("SnapshotDecorations.zig"),
 
     /// Activate or deactivate the inspector.
     inspector: bool,
@@ -78,29 +78,6 @@ pub const Message = union(enum) {
     pub const SearchMatch = struct {
         arena: ArenaAllocator,
         match: terminal.highlight.Flattened,
-    };
-
-    pub const DecorationStyle = struct {
-        foreground: ?terminal.color.RGB = null,
-        background: ?terminal.color.RGB = null,
-    };
-
-    pub const DecorationLayer = struct {
-        style: DecorationStyle,
-        ranges: []const terminal.highlight.Flattened,
-    };
-
-    pub const SnapshotDecorations = struct {
-        arena: ArenaAllocator,
-        layers: []const DecorationLayer,
-        text: []const DecorationText = &.{},
-    };
-
-    pub const DecorationText = struct {
-        coord: terminal.Coordinate,
-        codepoint: u21,
-        style: DecorationStyle,
-        bold: bool = false,
     };
 
     /// Initialize a change_config message.

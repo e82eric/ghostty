@@ -56,17 +56,7 @@ pub inline fn renderPass(
 /// pushing the newly presented and exported frame to the frame queue.
 pub fn complete(self: *const Self, sync: bool) void {
     _ = sync;
-    if (self.renderer.api.directPresentation()) {
-        const health: Health = if (self.renderer.api.presentDirect(self.target.*)) .healthy else |err| failed: {
-            log.err("failed to present Win32 frame: {}", .{err});
-            break :failed .unhealthy;
-        };
-        // Keep the existing conservative completion contract. A later
-        // optimization can replace this with fences per reusable frame.
-        gl.finish();
-        self.renderer.frameCompleted(health);
-        return;
-    }
+    if (@import("HostContext.zig").completeFrame(self.renderer, self.target.*)) return;
 
     // If there are any GL errors, consider the frame unhealthy.
     const health: Health = if (gl.errors.getError()) .healthy else |_| .unhealthy;

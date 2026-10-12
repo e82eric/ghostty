@@ -3029,7 +3029,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     selection,
                     search,
                     search_selected,
-                    decoration: renderer.Message.DecorationStyle,
+                    decoration: @import("SnapshotDecorations.zig").Style,
                 } = selected: {
                     // Order below matters for precedence.
                     if (text_override) |text| break :selected .{ .decoration = text.style };

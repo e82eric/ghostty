@@ -53,32 +53,8 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             try steps.append(b.allocator, &source_install.step);
         }
 
-        // Git for Windows ships ncurses tools but its usr/bin is usually not
-        // on the native PATH. Compile the same database for its less/vim/etc.
         if (os_tag == .windows) {
-            const compiler = b.option([]const u8, "terminfo-compiler", "Path to tic for compiling the Windows terminfo database") orelse blk: {
-                var search: std.ArrayList([]const u8) = .empty;
-                defer search.deinit(b.allocator);
-                inline for (.{ "ProgramFiles", "ProgramFiles(x86)" }) |key| {
-                    if (b.graph.environ_map.get(key)) |base| {
-                        try search.append(b.allocator, b.fmt("{s}/Git/usr/bin", .{base}));
-                    }
-                }
-                break :blk b.findProgram(&.{"tic"}, search.items) catch {
-                    std.log.err("Windows resources require tic: install Git for Windows or pass -Dterminfo-compiler=<path to tic>", .{});
-                    return error.TerminfoCompilerNotFound;
-                };
-            };
-            const compile_step = b.addSystemCommand(&.{ compiler, "-x", "-o" });
-            const database = compile_step.addOutputFileArg(terminfo_share_dir);
-            compile_step.addFileArg(source);
-            _ = compile_step.captureStdErr(.{});
-            const install_step = b.addInstallDirectory(.{
-                .source_dir = database,
-                .install_dir = .prefix,
-                .install_subdir = "share/terminfo",
-            });
-            try steps.append(b.allocator, &install_step.step);
+            try steps.append(b.allocator, try @import("WindowsResources.zig").compileTerminfo(b, source, terminfo_share_dir));
             break :terminfo;
         }
 

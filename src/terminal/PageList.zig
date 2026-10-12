@@ -2,6 +2,7 @@
 //! and provides higher level operations on top of those pages to
 //! make it slightly easier to work with.
 const PageList = @This();
+const ReflowMap = @import("ReflowMap.zig");
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -1222,6 +1223,8 @@ pub fn clone(
 
 /// Resize options
 pub const Resize = struct {
+    /// Optional frozen-snapshot translation recorder; live resizes leave null.
+    reflow_map: ?*ReflowMap = null,
     /// The new cols/cells of the screen.
     cols: ?size.CellCountInt = null,
     rows: ?size.CellCountInt = null,
@@ -1478,12 +1481,24 @@ fn resizeCols(
     // Reflow all our rows.
     {
         var reflow_cursor: ReflowCursor = .init(first_rewritten_node);
+        var source_row: usize = 0;
         while (it.next()) |row| {
+            // Growing height before shrinking width can append source rows.
+            // They did not exist in the layout being translated.
+            const row_map = if (opts.reflow_map) |map|
+                if (source_row < map.row_offsets.len - 1) map else null
+            else
+                null;
+            if (row_map) |map| map.beginRow(source_row);
             try reflow_cursor.reflowRow(
                 self,
                 row,
                 if (preserved_cursor) |c| c.tracked_pin else null,
+                row_map,
             );
+
+            if (row_map) |map| map.endRow();
+            source_row += 1;
 
             // Once we're done reflowing a page, we're done with it, so
             // make it available for reuse (or destroy it). Making it
@@ -1656,6 +1671,7 @@ const ReflowCursor = struct {
         list: *PageList,
         row: Pin,
         cursor_pin: ?*Pin,
+        reflow_map: ?*ReflowMap,
     ) Allocator.Error!void {
         const src_page: *Page = row.node.page();
         const src_row = row.rowAndCell().row;
@@ -1720,6 +1736,7 @@ const ReflowCursor = struct {
         // Defer processing of blank rows so that blank rows
         // at the end of the page list are never written.
         if (cols_len == 0) {
+            if (reflow_map) |map| try map.record(0, self.total_rows - 1 + self.new_rows, 0, cells.len, 0);
             // If this blank row was a wrap continuation somehow
             // then we won't need to write it since it should be
             // a part of the previously written row.
@@ -1772,7 +1789,10 @@ const ReflowCursor = struct {
                 );
                 const window = cells[x..][0..max_run];
                 const run = bulkRunLength(window);
+                const destination_row = self.total_rows - 1;
+                const destination_column = self.x;
                 if (run > 0 and self.copyRun(window[0..run], src_page)) {
+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, run, 1);
                     x += run;
                     continue;
                 }
@@ -1792,17 +1812,23 @@ const ReflowCursor = struct {
                 }
             }
 
+            const destination_row = self.total_rows - 1;
+            const destination_column = self.x;
             if (self.writeCell(
                 list,
                 &cells[x],
                 src_page,
             )) |result| switch (result) {
                 // Wrote the cell, move to the next.
-                .success => x += 1,
+                .success => {
+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, 1, 1);
+                    x += 1;
+                },
 
                 // Wrote the cell but request to skip the next so skip it.
                 // This is used for things like spacers.
                 .skip_next => {
+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, @min(2, cells.len - x), 0);
                     // Remap any tracked pins at the skipped position (x+1)
                     // since we won't process that cell in the loop.
                     if (row_has_pins) for (list.tracked_pins.keys()) |p| {
@@ -1833,6 +1859,7 @@ const ReflowCursor = struct {
                     // any further, so we just ignore bad cells and take
                     // corrupted (but valid) cell contents.
                     log.warn("reflowRow OutOfSpace on first row, discarding cell managed memory", .{});
+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, 1, 1);
                     x += 1;
                     self.cursorForward();
                 } else {
@@ -1843,6 +1870,12 @@ const ReflowCursor = struct {
                     // the same existing cell.
                 },
             }
+        }
+
+        if (reflow_map) |map| {
+            const last = map.segments.items[map.segments.items.len - 1];
+            const last_column = last.new_column + (last.count - 1) * last.step;
+            try map.record(x, last.new_row, last_column, cells.len - x, 0);
         }
 
         // If the source row isn't wrapped then we should scroll afterwards.

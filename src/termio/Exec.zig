@@ -32,37 +32,6 @@ const compat_fd = @import("../lib/compat/fd.zig");
 
 const log = std.log.scoped(.io_exec);
 
-fn msysTerminfoPath(alloc: Allocator, path: []const u8) ![]const u8 {
-    const drive = path.len >= 3 and std.ascii.isAlphabetic(path[0]) and
-        path[1] == ':' and (path[2] == '/' or path[2] == '\\');
-    const result = try alloc.alloc(u8, path.len);
-    if (drive) {
-        result[0] = '/';
-        result[1] = std.ascii.toLower(path[0]);
-        @memcpy(result[2..], path[2..]);
-    } else {
-        @memcpy(result, path);
-    }
-    for (result) |*char| if (char.* == '\\') {
-        char.* = '/';
-    };
-    return result;
-}
-
-test "Windows TERMINFO path supports MSYS ncurses" {
-    const cases = .{
-        .{ "C:/Program Files/Ghostty/share/terminfo", "/c/Program Files/Ghostty/share/terminfo" },
-        .{ "G:\\src\\ghostty\\share\\terminfo", "/g/src/ghostty/share/terminfo" },
-        .{ "\\\\server\\share\\terminfo", "//server/share/terminfo" },
-        .{ "/c/ghostty/share/terminfo", "/c/ghostty/share/terminfo" },
-    };
-    inline for (cases) |case| {
-        const result = try msysTerminfoPath(std.testing.allocator, case[0]);
-        defer std.testing.allocator.free(result);
-        try std.testing.expectEqualStrings(case[1], result);
-    }
-}
-
 /// The termios poll rate in milliseconds.
 const TERMIOS_POLL_MS = 200;
 
@@ -242,10 +211,7 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
     if (comptime builtin.os.tag == .windows) {
-        var written: windows.DWORD = 0;
-        if (windows.exp.kernel32.WriteFile(exec.read_thread_pipe, "x", 1, &written, null) == windows.FALSE) {
-            log.warn("error writing quit pipe err={}", .{windows.GetLastError()});
-        }
+        @import("host_process.zig").signalQuit(exec.read_thread_pipe);
     } else switch (posix.errno(posix.system.write(exec.read_thread_pipe, "x", 1))) {
         .SUCCESS => {},
 
@@ -698,7 +664,7 @@ const Subprocess = struct {
             // Git/MSYS ncurses expects an MSYS path in TERMINFO rather than
             // a native C:/... path, even though tic accepts the latter.
             try env.put("TERMINFO", if (comptime builtin.os.tag == .windows)
-                try msysTerminfoPath(alloc, dir)
+                try @import("host_process.zig").msysTerminfoPath(alloc, dir)
             else
                 dir);
         } else {
@@ -1127,21 +1093,9 @@ const Subprocess = struct {
 
         self.process = .{ .fork_exec = cmd };
         if (cmd.pid) |pid| {
-            const original_pid: u64 = if (builtin.os.tag == .windows) blk: {
-                const Api = struct {
-                    extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) u32;
-                    extern "kernel32" fn GetProcessTimes(std.os.windows.HANDLE, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME) callconv(.winapi) i32;
-                };
-                var created: std.os.windows.FILETIME = undefined;
-                var exited: std.os.windows.FILETIME = undefined;
-                var kernel: std.os.windows.FILETIME = undefined;
-                var user: std.os.windows.FILETIME = undefined;
-                if (Api.GetProcessTimes(pid, &created, &exited, &kernel, &user) != 0) {
-                    self.original_created.store((@as(u64, created.dwHighDateTime) << 32) | created.dwLowDateTime, .release);
-                }
-                break :blk Api.GetProcessId(pid);
-            } else @intCast(pid);
-            self.original_pid.store(original_pid, .release);
+            const identity = @import("host_process.zig").identity(pid);
+            self.original_created.store(identity.created, .release);
+            self.original_pid.store(identity.pid, .release);
         }
         return switch (builtin.os.tag) {
             .windows => .{
@@ -2379,4 +2333,8 @@ test "execCommand windows: direct command is passed through unchanged" {
     try testing.expectEqual(2, result.len);
     try testing.expectEqualStrings("C:\\tools\\foo.exe", result[0]);
     try testing.expectEqualStrings("arg with spaces", result[1]);
+}
+
+test {
+    _ = @import("host_process.zig");
 }

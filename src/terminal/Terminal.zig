@@ -15824,37 +15824,6 @@ test "Terminal: resize without scrollback pull" {
     }
 }
 
-test "Terminal: resize without scrollback pull shrink and grow prompt" {
-    const alloc = testing.allocator;
-    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 6 });
-    defer t.deinit(alloc);
-    t.flags.resize_pull_scrollback = false;
-
-    // Fill history, then leave a prompt with two blank rows below it.
-    try t.printString("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
-    t.setCursorPos(4, 1);
-    t.eraseDisplay(.below, false);
-    try t.printString("prompt> aaa");
-
-    // Shrinking consumes the blank rows before pushing text into history.
-    // Growing must keep the prompt on the same row as the ConPTY buffer.
-    for (0..2) |_| {
-        try t.resize(alloc, .{ .cols = 20, .rows = 3 });
-        try testing.expectEqual(@as(size.CellCountInt, 2), t.screens.active.cursor.y);
-        try t.resize(alloc, .{ .cols = 20, .rows = 6 });
-        try testing.expectEqual(@as(size.CellCountInt, 2), t.screens.active.cursor.y);
-    }
-
-    try t.printString("aaa");
-    const text = try t.plainString(alloc);
-    defer alloc.free(text);
-    try testing.expectEqualStrings("6\n7\nprompt> aaaaaa", text);
-
-    // The old output remains in history, even though growth doesn't show it.
-    const first = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?.cell;
-    try testing.expectEqual(@as(u21, '1'), first.content.codepoint.data);
-}
-
 // https://github.com/mitchellh/ghostty/issues/1343
 test "Terminal: resize with wraparound off" {
     const alloc = testing.allocator;
@@ -16569,4 +16538,8 @@ test "Terminal: eraseDisplay complete ignores stale prompt on recycled row" {
     t.eraseDisplay(.complete, false);
 
     try testing.expectEqual(t.screens.active.pages.rows, t.screens.active.pages.total_rows);
+}
+
+test {
+    _ = @import("host_regression_tests.zig");
 }

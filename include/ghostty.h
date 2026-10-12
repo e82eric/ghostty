@@ -1309,8 +1309,8 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_text_s*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
 
-/** Begin frozen snapshot presentation. Borrows live scrollback until the first
- * live mutation, capturing its original contents before that mutation. */
+/** Begin independently owned frozen snapshot presentation. Live output continues
+ * updating its own terminal without changing the captured contents. */
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
 
@@ -1358,19 +1358,20 @@ GHOSTTY_API bool ghostty_surface_snapshot_text_row(
     ghostty_snapshot_text_row_s*);
 GHOSTTY_API void ghostty_surface_snapshot_text_row_free(ghostty_snapshot_text_row_s*);
 
-/** VT-styled physical rows from a frozen snapshot. The result is owned by
- * the caller until styled_rows_free. At most 32 rows can be requested.
- * Rows are addressed in screen coordinates and retain their cell widths.
- */
+/** Resolved style runs over source columns [start,end). UINT32_MAX colors
+ * use preview defaults. Flags: bold=1 italic=2 strike=4 inverse=8 invisible=16
+ * faint=32. Read during document loading; free with style_runs_free. */
 typedef struct {
-    const char* text;
+    uint32_t start, end, foreground, background, underline_color;
+    uint8_t flags, underline;
+    uint16_t reserved;
+} ghostty_snapshot_style_run_s;
+typedef struct {
+    ghostty_snapshot_style_run_s* runs;
     uintptr_t len;
-} ghostty_snapshot_styled_rows_s;
-GHOSTTY_API bool ghostty_surface_snapshot_styled_rows(
-    ghostty_surface_t, uint64_t generation, uint64_t first_row,
-    uint32_t row_count, ghostty_snapshot_styled_rows_s*);
-GHOSTTY_API void ghostty_surface_snapshot_styled_rows_free(
-    ghostty_snapshot_styled_rows_s*);
+} ghostty_snapshot_style_runs_s;
+GHOSTTY_API bool ghostty_surface_snapshot_style_runs(ghostty_surface_t, uint64_t, uint64_t, ghostty_snapshot_style_runs_s*);
+GHOSTTY_API void ghostty_snapshot_style_runs_free(ghostty_snapshot_style_runs_s*);
 
 /** One physical row at the live terminal cursor. Text is owned by the caller. */
 typedef struct {
@@ -1389,6 +1390,36 @@ GHOSTTY_API bool ghostty_surface_live_cursor_position(
     ghostty_surface_t, ghostty_live_cursor_position_s*);
 
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
+/** Stable logical line and UTF-8 byte offset in plain snapshot text. */
+typedef struct { uint64_t line, byte; } ghostty_snapshot_logical_position_s;
+typedef struct { ghostty_snapshot_logical_position_s start, end; } ghostty_snapshot_logical_range_s;
+typedef struct { ghostty_snapshot_cell_s start, end; } ghostty_snapshot_resolved_range_s;
+GHOSTTY_API bool ghostty_surface_snapshot_logical_position(ghostty_surface_t, uint64_t, ghostty_snapshot_cell_s, ghostty_snapshot_logical_position_s*);
+GHOSTTY_API bool ghostty_surface_snapshot_resolve_logical_range(ghostty_surface_t, uint64_t, ghostty_snapshot_logical_range_s, ghostty_snapshot_resolved_range_s*);
+/** Sorted old-row/column -> new-row/column translation runs.
+ * step is 1 for contiguous cells and 0 for collapsed padding. */
+typedef struct {
+    uint64_t old_row, new_row;
+    uint32_t old_column, new_column, count, step;
+} ghostty_snapshot_reflow_segment_s;
+/** Owned, immutable map for one resize. row_offsets has old_rows + 1 entries;
+ * the segments for row r are [row_offsets[r], row_offsets[r+1]).
+ * Cell columns are zero based; segments use half-open source intervals.
+ * Buffers remain valid independently of subsequent resizes until map_free.
+ * Maps describe the frozen snapshot, never live terminal output. */
+typedef struct {
+    void* handle;
+    const ghostty_snapshot_reflow_segment_s* segments;
+    size_t segment_count;
+    const uint32_t* row_offsets;
+    uint64_t old_rows, new_rows;
+    uint32_t old_columns, new_columns;
+} ghostty_snapshot_reflow_map_s;
+/** Stop snapshot readers before reflow, translate retained positions with the
+ * returned map, then republish decorations. On failure result is empty. */
+GHOSTTY_API bool ghostty_surface_snapshot_resize(
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_reflow_map_s*);
+GHOSTTY_API void ghostty_snapshot_reflow_map_free(ghostty_snapshot_reflow_map_s*);
 typedef struct {
     ghostty_snapshot_cell_s cursor;
     uint64_t viewport_top;
@@ -1396,10 +1427,9 @@ typedef struct {
     uint32_t viewport_rows;
     uint32_t columns;
 } ghostty_snapshot_view_s;
-/** Frozen insertion-cursor cell, viewport, and screen dimensions. The cursor
- * remains the snapshot's initial insertion point as the viewport scrolls.
- * All row positions use coordinates across the complete frozen page list.
- */
+/** Snapshot insertion cursor, viewport, and dimensions in the current layout.
+ * Rust translates retained positions during coordinated resize. Recreate text
+ * cursors and rebuild source payloads after reflow before using them again. */
 GHOSTTY_API bool ghostty_surface_snapshot_view(
     ghostty_surface_t, uint64_t generation, ghostty_snapshot_view_s*);
 /** Resolve a snapshot cell to its character head (or next cell when moving right). */
