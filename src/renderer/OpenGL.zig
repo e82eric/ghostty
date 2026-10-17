@@ -112,14 +112,18 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
     };
     errdefer context.destroy(display) catch {};
 
+    // An embedder may call us with its own context current on this
+    // thread; it must still be current when we return.
+    const previous = egl.CurrentBinding.save();
+
     display.makeCurrent(null, null, context) catch |err| {
         log.warn("failed to make EGL context current err={}", .{err});
         return err;
     };
 
-    // Release current so that the main thread
-    // doesn't hold onto the GL context forever.
-    defer display.releaseCurrent();
+    // Restore the previous binding (or release ours) so that the main
+    // thread doesn't hold onto the GL context forever.
+    defer previous.restore(display);
 
     return .{
         .alloc = alloc,
@@ -138,7 +142,10 @@ pub fn deinit(self: *OpenGL) void {
         self.* = undefined;
         return;
     }
-    self.egl_display.releaseCurrent();
+    // Only unbind our own context; an embedder's may be current here.
+    if (egl.c.eglGetCurrentContext() == @as(egl.c.EGLContext, self.egl_context)) {
+        self.egl_display.releaseCurrent();
+    }
     self.egl_context.destroy(self.egl_display) catch {};
 
     // Do not destroy the EGL display here as

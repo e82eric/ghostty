@@ -113,6 +113,34 @@ pub const Display = opaque {
     }
 };
 
+/// The EGL binding that was current on the calling thread, so that
+/// an embedder's context can be restored after borrowing the thread.
+pub const CurrentBinding = struct {
+    display: c.EGLDisplay,
+    draw: c.EGLSurface,
+    read: c.EGLSurface,
+    context: c.EGLContext,
+
+    pub fn save() CurrentBinding {
+        return .{
+            .display = c.eglGetCurrentDisplay(),
+            .draw = c.eglGetCurrentSurface(c.EGL_DRAW),
+            .read = c.eglGetCurrentSurface(c.EGL_READ),
+            .context = c.eglGetCurrentContext(),
+        };
+    }
+
+    /// Restore the saved binding, or release the current context if
+    /// nothing was current when it was saved.
+    pub fn restore(self: CurrentBinding, fallback: *Display) void {
+        if (self.context == c.EGL_NO_CONTEXT) {
+            fallback.releaseCurrent();
+            return;
+        }
+        _ = c.eglMakeCurrent(self.display, self.draw, self.read, self.context);
+    }
+};
+
 pub const Config = opaque {
     pub fn choose(display: *Display, attrs: [:c.EGL_NONE]const c.EGLint) Error!*Config {
         var config: c.EGLConfig = undefined;
