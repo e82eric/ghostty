@@ -477,6 +477,24 @@ pub fn add(
     if (target.result.os.tag == .windows and self.config.renderer == .opengl) {
         @import("EmbeddedSamples.zig").linkWindowsOpenGL(b, step);
     }
+    // The embedded library selects EGL itself on Linux, so it needs
+    // glad and libEGL even without the GTK runtime.
+    if (step.kind == .lib and
+        target.result.os.tag == .linux and
+        self.config.app_runtime == .none and
+        self.config.renderer == .opengl)
+    {
+        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+        step.root_module.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
+        step.root_module.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/glad_egl.c"),
+            .flags = &.{},
+        });
+        step.root_module.linkSystemLibrary("egl", dynamic_link_opts);
+    }
     // Disable ubsan for MSVC: Zig's ubsan runtime cannot be bundled
     // on Windows (LNK4229), leaving __ubsan_handle_* unresolved when
     // the static archive is consumed by an external linker.

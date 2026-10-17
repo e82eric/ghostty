@@ -1913,6 +1913,10 @@ pub const PageFormatter = struct {
             count,
         ) catch return error.WriteFailed;
 
+        // The blanks precede (x, y), so walk backwards from it but fill
+        // the map from the end to keep points in output order.
+        const start = map.map.items.len;
+        map.map.items.len += count;
         var remaining = count;
         var blank_x = x;
         var blank_y = y;
@@ -1930,7 +1934,7 @@ pub const PageFormatter = struct {
                 blank_y = 0;
             }
 
-            map.map.appendAssumeCapacity(.{ .x = blank_x, .y = blank_y });
+            map.map.items[start + remaining - 1] = .{ .x = blank_x, .y = blank_y };
         }
     }
 
@@ -7637,4 +7641,45 @@ test "Page HTML hyperlink point map maps closing to previous cell" {
     for (closing_idx..closing_idx + "</a>".len) |i| {
         try testing.expectEqual(expected_coord, point_map.items[i]);
     }
+}
+
+test "Page plain point map orders blank cells left to right" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+
+    var t = try Terminal.init(io, alloc, .{
+        .cols = 20,
+        .rows = 2,
+    });
+    defer t.deinit(alloc);
+
+    var s = t.vtStream();
+    defer s.deinit();
+
+    // Tabs leave blank cells that are emitted when the next cell is written.
+    s.nextSlice("ab\tc");
+
+    const page = t.screens.active.pages.pages.last.?.page();
+    var formatter: PageFormatter = .init(page, .{
+        .emit = .plain,
+        .trim = false,
+    });
+    formatter.end_y = 0;
+
+    var point_map: std.ArrayList(Coordinate) = .empty;
+    defer point_map.deinit(alloc);
+    formatter.point_map = .{ .alloc = alloc, .map = &point_map };
+
+    try formatter.format(&builder.writer);
+    const output = builder.writer.buffered();
+    try testing.expectEqualStrings("ab      c", output);
+    try testing.expectEqual(output.len, point_map.items.len);
+    for (0..output.len) |i| try testing.expectEqual(
+        Coordinate{ .x = @intCast(i), .y = 0 },
+        point_map.items[i],
+    );
 }
