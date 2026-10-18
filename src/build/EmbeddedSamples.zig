@@ -150,6 +150,14 @@ pub fn add(
         );
         egui_exe_install.step.dependOn(&cargo.step);
         egui_step.dependOn(&egui_exe_install.step);
+        // The shell-side client for the picker socket.
+        const npick_install = b.addInstallFileWithDir(
+            .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/npick") },
+            .bin,
+            "npick",
+        );
+        npick_install.step.dependOn(&cargo.step);
+        egui_step.dependOn(&npick_install.step);
     }
 }
 
