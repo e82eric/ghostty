@@ -107,6 +107,12 @@ pub fn add(
             "ghostty.dll",
         ).step);
         egui_step.dependOn(&egui_exe_install.step);
+        // Lua modules a config can require, e.g. require("ghostty.git").
+        egui_step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = b.path("example/rust-egui-terminal/lua"),
+            .install_dir = .prefix,
+            .install_subdir = "share/ghostty-egui/lua",
+        }).step);
     } else {
         const public_lib_install = b.addInstallFileWithDir(
             lib_shared.output,
@@ -158,6 +164,12 @@ pub fn add(
         );
         npick_install.step.dependOn(&cargo.step);
         egui_step.dependOn(&npick_install.step);
+        // Lua modules a config can require, e.g. require("ghostty.git").
+        egui_step.dependOn(&b.addInstallDirectory(.{
+            .source_dir = b.path("example/rust-egui-terminal/lua"),
+            .install_dir = .prefix,
+            .install_subdir = "share/ghostty-egui/lua",
+        }).step);
     }
 }
 
