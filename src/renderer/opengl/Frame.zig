@@ -56,7 +56,6 @@ pub inline fn renderPass(
 /// pushing the newly presented and exported frame to the frame queue.
 pub fn complete(self: *const Self, sync: bool) void {
     _ = sync;
-    if (@import("HostContext.zig").completeFrame(self.renderer, self.target.*)) return;
 
     // If there are any GL errors, consider the frame unhealthy.
     const health: Health = if (gl.errors.getError()) .healthy else |_| .unhealthy;

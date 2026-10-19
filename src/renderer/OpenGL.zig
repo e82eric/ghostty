@@ -72,7 +72,7 @@ pub fn init(
             .alloc = alloc,
             .blending = opts.config.blending,
             .device = device,
-            .wgl_context = try HostContext.create(opts.rt_surface, external),
+            .wgl_context = try HostContext.create(external),
             .wgl_vsync = opts.config.vsync,
             .external = external != null,
             .output_pool = output_pool,
@@ -329,19 +329,6 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
 /// of the frame and is responsible for freeing it.
 ///
 /// This runs on the render thread.
-pub fn directPresentation(self: *const OpenGL) bool {
-    return is_windows and !self.external;
-}
-
-pub fn presentDirect(self: *OpenGL, target: Target) !void {
-    std.debug.assert(self.directPresentation());
-    if (comptime is_windows) {
-        try HostContext.present(self.wgl_context.?, target);
-        return;
-    }
-    unreachable;
-}
-
 pub fn exportFrame(
     self: *OpenGL,
     target: Target,

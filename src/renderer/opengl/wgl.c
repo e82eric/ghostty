@@ -15,6 +15,8 @@ void *ghostty_wgl_proc(const char *name) {
     return (void *)proc;
 }
 
+/* Create a context on the host's window sharing objects with its context.
+ * The host's context is current, so the extension entry point is loaded. */
 void *ghostty_wgl_create(void *window, void *share_context) {
     GhosttyWGL *gl = calloc(1, sizeof(*gl));
     if (!gl) return NULL;
@@ -33,28 +35,9 @@ void *ghostty_wgl_create(void *window, void *share_context) {
         if (!index || !SetPixelFormat(gl->dc, index, &format)) goto fail;
     }
 
-    // A shared context is supplied by OpenGL embedders while their context is
-    // current, so the extension entry point is already available. Native WGL
-    // windows need a bootstrap context to load it.
-    if (share_context) {
-        CreateContextAttribs create = (CreateContextAttribs)ghostty_wgl_proc("wglCreateContextAttribsARB");
-        const int attributes[] = { 0x2091, 4, 0x2092, 3, 0x9126, 1, 0 };
-        if (create) gl->context = create(gl->dc, (HGLRC)share_context, attributes);
-        if (!gl->context) goto fail;
-        return gl;
-    }
-
-    HGLRC bootstrap = wglCreateContext(gl->dc);
-    if (!bootstrap) goto fail;
-    if (!wglMakeCurrent(gl->dc, bootstrap)) {
-        wglDeleteContext(bootstrap);
-        goto fail;
-    }
     CreateContextAttribs create = (CreateContextAttribs)ghostty_wgl_proc("wglCreateContextAttribsARB");
     const int attributes[] = { 0x2091, 4, 0x2092, 3, 0x9126, 1, 0 };
-    if (create) gl->context = create(gl->dc, NULL, attributes);
-    wglMakeCurrent(NULL, NULL);
-    wglDeleteContext(bootstrap);
+    if (create) gl->context = create(gl->dc, (HGLRC)share_context, attributes);
     if (!gl->context) goto fail;
     return gl;
 fail:
@@ -71,7 +54,6 @@ int ghostty_wgl_enter(void *ptr, int vsync) {
     return 1;
 }
 void ghostty_wgl_leave(void) { wglMakeCurrent(NULL, NULL); }
-int ghostty_wgl_swap(void *ptr) { return SwapBuffers(((GhosttyWGL *)ptr)->dc); }
 void ghostty_wgl_destroy(void *ptr) {
     GhosttyWGL *gl = ptr;
     wglDeleteContext(gl->context);
