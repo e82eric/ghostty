@@ -1,7 +1,4 @@
-//! OpenGL contexts shared with the embedding host.
-//!
-//! OpenGL.zig calls into this file through one-line hooks so that the
-//! embedding support stays out of upstream's function bodies.
+//! OpenGL contexts shared with the embedding host, for EmbeddedGL.zig.
 const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -53,8 +50,7 @@ pub const State = struct {
         const external = externalContext(surface);
         if (external) |v| {
             // On EGL a shared context must live on the host's display,
-            // which the embedded apprt passes to the device (see
-            // renderDeviceOptions).
+            // where EmbeddedGL creates our device.
             if (comptime !is_windows) {
                 if (v.display == null) return error.EGLDisplayMustBeSet;
             }

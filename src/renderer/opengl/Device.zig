@@ -38,12 +38,6 @@ pub fn init(alloc: Allocator, options: Options) !*Device {
     const self = try alloc.create(Device);
     errdefer alloc.destroy(self);
 
-    // Windows renders through WGL contexts owned by each surface.
-    if (comptime @import("builtin").os.tag == .windows) {
-        self.* = .{ .display = undefined, .config = undefined };
-        return self;
-    }
-
     try egl.load();
 
     const display = options.display orelse egl.Display.initPlatform(

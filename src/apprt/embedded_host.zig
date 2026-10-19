@@ -31,13 +31,7 @@ export fn ghostty_surface_take_gl_frame(
     if (comptime renderer.Renderer.ExportedFrame == void or @import("../build_config.zig").renderer != .opengl) return false;
 
     const frame = surface.core_surface.renderer.takeFrame() orelse return false;
-    const texture = switch (frame) {
-        .texture => |v| v,
-        else => {
-            frame.deinit();
-            return false;
-        },
-    };
+    const texture = frame.texture;
 
     const alloc = surface.app.core_app.alloc;
     const owned = alloc.create(GLFrame) catch |err| {

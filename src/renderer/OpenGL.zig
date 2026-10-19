@@ -2,8 +2,6 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
-const HostContext = @import("opengl/HostContext.zig");
-const is_windows = @import("builtin").os.tag == .windows;
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
@@ -49,17 +47,13 @@ blending: configpkg.Config.AlphaBlending,
 /// The shared render device.
 device: *const Device,
 
-egl_context: *gl.egl.Context = undefined,
-host: HostContext.State = .{},
+egl_context: *gl.egl.Context,
 
 pub fn init(
     alloc: Allocator,
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
-    var host: HostContext.State = try .init(alloc, opts.rt_surface);
-    errdefer host.deinit();
-    if (comptime is_windows) return .{ .alloc = alloc, .blending = opts.config.blending, .device = device, .host = host };
     const display = device.display;
 
     // Bind to OpenGL API explicitly before we create the context,
@@ -68,7 +62,7 @@ pub fn init(
 
     // Create our context. Contexts are surface-scoped because a
     // context can only be current on one thread at a time.
-    const context = egl.Context.create(display, device.config, @ptrCast(host.eglShareContext()), &.{
+    const context = egl.Context.create(display, device.config, null, &.{
         egl.c.EGL_CONTEXT_MAJOR_VERSION,       MIN_VERSION_MAJOR,
         egl.c.EGL_CONTEXT_MINOR_VERSION,       MIN_VERSION_MINOR,
         egl.c.EGL_CONTEXT_OPENGL_PROFILE_MASK, egl.c.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
@@ -78,35 +72,25 @@ pub fn init(
     };
     errdefer context.destroy(display) catch {};
 
-    // An embedder may call us with its own context current on this
-    // thread; it must still be current when we return.
-    const previous = egl.CurrentBinding.save();
-
     display.makeCurrent(null, null, context) catch |err| {
         log.warn("failed to make EGL context current err={}", .{err});
         return err;
     };
 
-    // Restore the previous binding (or release ours) so that the main
-    // thread doesn't hold onto the GL context forever.
-    defer previous.restore(display);
+    // Release current so that the main thread
+    // doesn't hold onto the GL context forever.
+    defer display.releaseCurrent();
 
     return .{
         .alloc = alloc,
         .blending = opts.config.blending,
         .device = device,
         .egl_context = context,
-        .host = host,
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
-    self.host.deinit();
-    if (comptime is_windows) return;
-    // Only unbind our own context; an embedder's may be current here.
-    if (egl.c.eglGetCurrentContext() == @as(egl.c.EGLContext, self.egl_context)) {
-        self.device.display.releaseCurrent();
-    }
+    self.device.display.releaseCurrent();
     self.egl_context.destroy(self.device.display) catch {};
     self.* = undefined;
 }
@@ -182,7 +166,7 @@ fn glDebugMessageCallback(
 }
 
 /// Prepares the provided GL context, loading it with glad.
-fn prepareContext(getProcAddress: anytype) !void {
+pub fn prepareContext(getProcAddress: anytype) !void {
     const version = try gl.glad.load(getProcAddress);
     const major = gl.glad.versionMajor(@intCast(version));
     const minor = gl.glad.versionMinor(@intCast(version));
@@ -216,7 +200,6 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
-    if (comptime is_windows) return self.host.threadEnter(prepareContext);
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -226,8 +209,6 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
-    self.host.threadExit();
-    if (comptime is_windows) return;
     self.device.display.releaseCurrent();
     gl.glad.unload();
 }
@@ -298,9 +279,6 @@ pub fn present(
     target: Target,
     presentation_health: rendererpkg.Health,
 ) !ExportedFrame {
-    // An embedding host samples frames as shared textures (always on Windows).
-    if (try self.host.exportFrame(target)) |frame| return .{ .texture = frame };
-    if (comptime is_windows) return error.OpenGLContextMustBeSet;
     // We only export DMABUFs when the apprt can present them.
     // Otherwise, use CPU buffers.
     if (presentation_health == .healthy) {
@@ -321,9 +299,8 @@ pub fn present(
 
 /// A finished frame exported for presentation by the apprt.
 pub const ExportedFrame = union(enum) {
-    texture: HostContext.TextureFrame,
-    dmabuf: if (is_windows) void else Dmabuf,
-    memory: if (is_windows) void else Memory,
+    dmabuf: Dmabuf,
+    memory: Memory,
 
     /// RGBA8 pixel data with premultiplied alpha, tightly packed
     /// (`width * 4` bytes per row), in CPU memory.
@@ -340,9 +317,8 @@ pub const ExportedFrame = union(enum) {
 
     pub fn deinit(self: ExportedFrame) void {
         switch (self) {
-            .texture => |v| v.deinit(),
-            .dmabuf => |v| if (comptime !is_windows) v.deinit(),
-            .memory => |v| if (comptime !is_windows) v.deinit(),
+            .dmabuf => |v| v.deinit(),
+            .memory => |v| v.deinit(),
         }
     }
 };

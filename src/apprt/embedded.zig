@@ -1269,15 +1269,8 @@ pub const Surface = struct {
     }
 
     pub fn renderDeviceOptions(self: *const Surface) !renderer.Device.Options {
-        // An embedder sharing its OpenGL context renders on its EGL display.
-        if (comptime @hasField(renderer.Device.Options, "display")) {
-            switch (self.platform) {
-                .opengl => |v| if (v.display) |display| {
-                    return .{ .display = @ptrCast(@alignCast(display)) };
-                },
-                else => {},
-            }
-        }
+        // The Metal renderer currently does not have any options
+        _ = self;
         return .{};
     }
 };
