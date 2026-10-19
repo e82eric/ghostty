@@ -43,28 +43,6 @@ pub fn add(
             "ghostty.lib",
         );
         b.getInstallStep().dependOn(&import_lib_install.step);
-        const sample = b.addExecutable(.{
-            .name = "ghostty_win32",
-            .root_module = b.createModule(.{
-                .target = config.target,
-                .optimize = config.optimize,
-                .link_libc = true,
-            }),
-        });
-        sample.root_module.addCSourceFile(.{
-            .file = b.path("example/c-win32/src/main.c"),
-            .flags = &.{ "-std=c11", "-D_CRT_SECURE_NO_WARNINGS" },
-        });
-        sample.root_module.addIncludePath(b.path("include"));
-        sample.root_module.addObjectFile(lib_shared.implib.?);
-        sample.root_module.linkSystemLibrary("user32", .{});
-        sample.root_module.linkSystemLibrary("gdi32", .{});
-        const sample_step = b.step("win32-sample", "Build the native Win32 OpenGL terminal sample");
-        sample_step.dependOn(&conpty.step);
-        sample_step.dependOn(&b.addInstallArtifact(sample, .{}).step);
-        // The import library records ghostty.dll, irrespective of
-        // the internal library's installed filename.
-        sample_step.dependOn(&b.addInstallFileWithDir(lib_shared.output, .bin, "ghostty.dll").step);
 
         const egui_step = b.step("egui-sample", "Build the egui terminal sample");
         egui_step.dependOn(&conpty.step);

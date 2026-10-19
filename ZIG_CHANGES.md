@@ -2688,8 +2688,8 @@ match. Pure tests cover edges, short windows, and zero padding.
 
 **Public API / types:** `add`, `linkWindowsOpenGL`.
 
-Defines win32-sample and egui-sample, installs the embedding library/import library,
-builds the C or Rust host, supplies the VT library paths required by NFM preview
+Defines egui-sample, installs the embedding library/import library,
+builds the Rust host, supplies the VT library paths required by NFM preview
 code, and installs runtime artifacts/resources. On Windows it invokes conpty.ps1
 for the pinned architecture-specific ConPTY runtime and adds the conpty target.
 The non-Windows path installs a public libghostty.so and builds the Rust sample.
