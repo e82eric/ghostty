@@ -14,7 +14,7 @@ pub const TextureFrame = OutputPool.TextureFrame;
 const is_windows = builtin.os.tag == .windows;
 
 extern fn ghostty_wgl_create(*anyopaque, *anyopaque) ?*anyopaque;
-extern fn ghostty_wgl_enter(*anyopaque, c_int) c_int;
+extern fn ghostty_wgl_enter(*anyopaque) c_int;
 extern fn ghostty_wgl_leave() void;
 extern fn ghostty_wgl_destroy(*anyopaque) void;
 extern fn ghostty_wgl_proc([*:0]const u8) ?*const anyopaque;
@@ -45,11 +45,11 @@ pub const State = struct {
     /// Textures handed to the host, when it shares its context.
     output_pool: ?*OutputPool = null,
 
-    /// Our WGL context on Windows, which always shares the host's.
+    /// Our WGL context on Windows, which always shares the host's. The
+    /// host presents the window, so it owns the swap interval (vsync).
     wgl_context: ?*anyopaque = null,
-    wgl_vsync: bool = true,
 
-    pub fn init(alloc: Allocator, surface: anytype, vsync: bool) !State {
+    pub fn init(alloc: Allocator, surface: anytype) !State {
         const external = externalContext(surface);
         if (external) |v| {
             // On EGL a shared context must live on the host's display,
@@ -67,7 +67,6 @@ pub const State = struct {
             .external = external,
             .output_pool = output_pool,
             .wgl_context = if (comptime is_windows) try createWgl(external) else null,
-            .wgl_vsync = vsync,
         };
     }
 
@@ -85,7 +84,7 @@ pub const State = struct {
     /// elsewhere the caller makes its EGL context current).
     pub fn threadEnter(self: *State, comptime prepare: anytype) !void {
         if (comptime !is_windows) unreachable;
-        if (ghostty_wgl_enter(self.wgl_context.?, @intFromBool(self.wgl_vsync)) == 0)
+        if (ghostty_wgl_enter(self.wgl_context.?) == 0)
             return error.WGLMakeCurrentFailed;
         errdefer ghostty_wgl_leave();
         try prepare(&ghostty_wgl_proc);

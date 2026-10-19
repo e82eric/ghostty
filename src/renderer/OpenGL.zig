@@ -57,7 +57,7 @@ pub fn init(
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
-    var host: HostContext.State = try .init(alloc, opts.rt_surface, opts.config.vsync);
+    var host: HostContext.State = try .init(alloc, opts.rt_surface);
     errdefer host.deinit();
     if (comptime is_windows) return .{ .alloc = alloc, .blending = opts.config.blending, .device = device, .host = host };
     const display = device.display;

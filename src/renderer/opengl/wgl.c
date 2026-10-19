@@ -5,7 +5,6 @@
 
 typedef struct { HWND window; HDC dc; HGLRC context; } GhosttyWGL;
 typedef HGLRC (WINAPI *CreateContextAttribs)(HDC, HGLRC, const int *);
-typedef BOOL (WINAPI *SwapInterval)(int);
 
 void *ghostty_wgl_proc(const char *name) {
     PROC proc = wglGetProcAddress(name);
@@ -46,12 +45,10 @@ fail:
     return NULL;
 }
 
-int ghostty_wgl_enter(void *ptr, int vsync) {
+/* The host presents the window, so its swap interval is left alone. */
+int ghostty_wgl_enter(void *ptr) {
     GhosttyWGL *gl = ptr;
-    if (!wglMakeCurrent(gl->dc, gl->context)) return 0;
-    SwapInterval interval = (SwapInterval)ghostty_wgl_proc("wglSwapIntervalEXT");
-    if (interval) interval(vsync);
-    return 1;
+    return wglMakeCurrent(gl->dc, gl->context) ? 1 : 0;
 }
 void ghostty_wgl_leave(void) { wglMakeCurrent(NULL, NULL); }
 void ghostty_wgl_destroy(void *ptr) {
