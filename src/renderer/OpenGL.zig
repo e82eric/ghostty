@@ -2,12 +2,9 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
-const builtin = @import("builtin");
-const is_windows = builtin.os.tag == .windows;
 const HostContext = @import("opengl/HostContext.zig");
+const is_windows = @import("builtin").os.tag == .windows;
 const Allocator = std.mem.Allocator;
-const OutputPool = @import("opengl/OutputPool.zig");
-pub const TextureFrame = OutputPool.TextureFrame;
 const gl = @import("opengl");
 const egl = gl.egl;
 const shadertoy = @import("shadertoy.zig");
@@ -53,37 +50,16 @@ blending: configpkg.Config.AlphaBlending,
 device: *const Device,
 
 egl_context: *gl.egl.Context = undefined,
-wgl_context: ?*anyopaque = null,
-wgl_vsync: bool = true,
-external: bool = false,
-output_pool: ?*OutputPool = null,
+host: HostContext.State = .{},
 
 pub fn init(
     alloc: Allocator,
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
-    const external = HostContext.externalContext(opts.rt_surface);
-    const output_pool = if (external != null) try OutputPool.create(alloc) else null;
-    errdefer if (output_pool) |v| v.destroy();
-
-    if (comptime is_windows) {
-        return .{
-            .alloc = alloc,
-            .blending = opts.config.blending,
-            .device = device,
-            .wgl_context = try HostContext.create(external),
-            .wgl_vsync = opts.config.vsync,
-            .external = external != null,
-            .output_pool = output_pool,
-        };
-    }
-
-    // A shared context must live on the embedder's display, which the
-    // embedded apprt passes to the device (see renderDeviceOptions).
-    if (external) |v| {
-        if (v.display == null) return error.EGLDisplayMustBeSet;
-    }
+    var host: HostContext.State = try .init(alloc, opts.rt_surface, opts.config.vsync);
+    errdefer host.deinit();
+    if (comptime is_windows) return .{ .alloc = alloc, .blending = opts.config.blending, .device = device, .host = host };
     const display = device.display;
 
     // Bind to OpenGL API explicitly before we create the context,
@@ -92,8 +68,7 @@ pub fn init(
 
     // Create our context. Contexts are surface-scoped because a
     // context can only be current on one thread at a time.
-    const share: ?*egl.Surface = if (external) |v| @ptrCast(v.context) else null;
-    const context = egl.Context.create(display, device.config, share, &.{
+    const context = egl.Context.create(display, device.config, @ptrCast(host.eglShareContext()), &.{
         egl.c.EGL_CONTEXT_MAJOR_VERSION,       MIN_VERSION_MAJOR,
         egl.c.EGL_CONTEXT_MINOR_VERSION,       MIN_VERSION_MINOR,
         egl.c.EGL_CONTEXT_OPENGL_PROFILE_MASK, egl.c.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
@@ -121,18 +96,13 @@ pub fn init(
         .blending = opts.config.blending,
         .device = device,
         .egl_context = context,
-        .external = external != null,
-        .output_pool = output_pool,
+        .host = host,
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
-    if (self.output_pool) |v| v.destroy();
-    if (comptime is_windows) {
-        HostContext.destroy(self.wgl_context.?);
-        self.* = undefined;
-        return;
-    }
+    self.host.deinit();
+    if (comptime is_windows) return;
     // Only unbind our own context; an embedder's may be current here.
     if (egl.c.eglGetCurrentContext() == @as(egl.c.EGLContext, self.egl_context)) {
         self.device.display.releaseCurrent();
@@ -246,10 +216,7 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
-    if (comptime is_windows) {
-        try HostContext.enter(self.wgl_context.?, self.wgl_vsync, prepareContext);
-        return;
-    }
+    if (comptime is_windows) return self.host.threadEnter(prepareContext);
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -259,11 +226,8 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
-    if (self.output_pool) |v| v.deinitResources();
-    if (comptime is_windows) {
-        HostContext.leave();
-        return;
-    }
+    self.host.threadExit();
+    if (comptime is_windows) return;
     self.device.display.releaseCurrent();
     gl.glad.unload();
 }
@@ -329,40 +293,35 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
 /// of the frame and is responsible for freeing it.
 ///
 /// This runs on the render thread.
-pub fn exportFrame(
+pub fn present(
     self: *OpenGL,
     target: Target,
     presentation_health: rendererpkg.Health,
 ) !ExportedFrame {
-    if (self.external) {
-        return .{ .texture = try self.output_pool.?.exportFrame(target) };
-    }
-
-    if (comptime !is_windows) {
-        // We only export DMABUFs when the apprt can present them.
-        // Otherwise, use CPU buffers.
-        if (presentation_health == .healthy) {
-            if (target.exportDmabuf(self.device.display, self.egl_context)) |dmabuf| {
-                return .{ .dmabuf = dmabuf };
-            } else |_| {
-                log.warn("failed to export DMABUF, falling back to CPU presentation", .{});
-            }
+    // An embedding host samples frames as shared textures (always on Windows).
+    if (try self.host.exportFrame(target)) |frame| return .{ .texture = frame };
+    if (comptime is_windows) return error.OpenGLContextMustBeSet;
+    // We only export DMABUFs when the apprt can present them.
+    // Otherwise, use CPU buffers.
+    if (presentation_health == .healthy) {
+        if (target.exportDmabuf(self.device.display, self.egl_context)) |dmabuf| {
+            return .{ .dmabuf = dmabuf };
+        } else |_| {
+            log.warn("failed to export DMABUF, falling back to CPU presentation", .{});
         }
-
-        return .{ .memory = .{
-            .width = @intCast(target.width),
-            .height = @intCast(target.height),
-            .pixels = try target.readPixelsAlloc(self.alloc),
-            .alloc = self.alloc,
-        } };
     }
 
-    return error.FrameExportUnsupported;
+    return .{ .memory = .{
+        .width = @intCast(target.width),
+        .height = @intCast(target.height),
+        .pixels = try target.readPixelsAlloc(self.alloc),
+        .alloc = self.alloc,
+    } };
 }
 
 /// A finished frame exported for presentation by the apprt.
 pub const ExportedFrame = union(enum) {
-    texture: TextureFrame,
+    texture: HostContext.TextureFrame,
     dmabuf: if (is_windows) void else Dmabuf,
     memory: if (is_windows) void else Memory,
 
