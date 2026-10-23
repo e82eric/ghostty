@@ -34,3 +34,30 @@ test "Terminal: resize without scrollback pull shrink and grow prompt" {
     const first = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?.cell;
     try testing.expectEqual(@as(u21, '1'), first.content.codepoint.data);
 }
+
+test "Terminal: resize without scrollback pull to one row and back keeps prompt" {
+    const alloc = testing.allocator;
+    var t = try Terminal.init(testing.io, alloc, .{ .cols = 80, .rows = 30 });
+    defer t.deinit(alloc);
+    t.flags.resize_pull_scrollback = false;
+
+    // Five lines of output below a command, then a prompt with blank rows below.
+    try t.printString("PS> 1..5\n1\n2\n3\n4\n5\nPS> ");
+
+    // Drag the bottom edge up one row at a time, then back down.
+    var rows: size.CellCountInt = 30;
+    while (rows > 1) {
+        rows -= 1;
+        try t.resize(alloc, .{ .cols = 80, .rows = rows });
+    }
+    try testing.expectEqual(@as(size.CellCountInt, 0), t.screens.active.cursor.y);
+    while (rows < 30) {
+        rows += 1;
+        try t.resize(alloc, .{ .cols = 80, .rows = rows });
+    }
+    try testing.expectEqual(@as(size.CellCountInt, 0), t.screens.active.cursor.y);
+
+    const text = try t.plainString(alloc);
+    defer alloc.free(text);
+    try testing.expectEqualStrings("PS> ", text);
+}
