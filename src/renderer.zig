@@ -38,7 +38,8 @@ pub const Renderer = GenericRenderer(GraphicsAPI);
 
 const GraphicsAPI = switch (build_config.renderer) {
     .metal => Metal,
-    .opengl => if (build_config.app_runtime == .none) @import("renderer/EmbeddedGL.zig") else OpenGL,
+    .opengl => OpenGL,
+    .wgpu => @import("renderer/Wgpu.zig"),
 };
 
 /// The app-scoped render device from which surface renderers are created.

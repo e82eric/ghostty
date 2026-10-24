@@ -42,7 +42,7 @@ pub const Uniforms = extern struct {
 };
 
 /// The target to load shaders for.
-pub const Target = enum { glsl, msl };
+pub const Target = enum { glsl, msl, spirv };
 
 /// Load a set of shaders from files and convert them to the target
 /// format. The shader order is preserved.
@@ -102,7 +102,11 @@ pub fn loadFromFile(
     // Convert to full GLSL
     const glsl: [:0]const u8 = glsl: {
         var stream: std.Io.Writer.Allocating = .init(alloc);
-        try glslFromShader(&stream.writer, src);
+        if (target == .spirv) {
+            try wgpuGlslFromShader(alloc, &stream.writer, src);
+        } else {
+            try glslFromShader(&stream.writer, src);
+        }
         try stream.writer.writeByte(0);
         break :glsl stream.written()[0 .. stream.written().len - 1 :0];
     };
@@ -137,7 +141,36 @@ pub fn loadFromFile(
         // is the final result that will be returned to the caller.
         .glsl => try glslFromSpv(alloc_gpa, spirv),
         .msl => try mslFromSpv(alloc_gpa, spirv),
+        .spirv => try alloc_gpa.dupeZ(u8, spirv),
     };
+}
+
+/// Like glslFromShader, for SPIR-V consumed by wgpu: WGSL has no combined
+/// image samplers, so iChannel0 becomes a separate texture (binding 0) and
+/// sampler (binding 2) around the uniforms (binding 1), and gl_FragCoord is
+/// the built-in rather than a declared input.
+fn wgpuGlslFromShader(alloc: Allocator, writer: *std.Io.Writer, src: []const u8) !void {
+    const prefix = @embedFile("shaders/shadertoy_prefix.glsl");
+    const separate = try std.mem.replaceOwned(
+        u8,
+        alloc,
+        prefix,
+        "layout(binding = 0) uniform sampler2D iChannel0;",
+        \\layout(set = 0, binding = 0) uniform texture2D channel_texture;
+        \\layout(set = 0, binding = 2) uniform sampler channel_sampler;
+        \\#define iChannel0 sampler2D(channel_texture, channel_sampler)
+        ,
+    );
+    const builtin_position = try std.mem.replaceOwned(
+        u8,
+        alloc,
+        separate,
+        "layout(location = 0) in vec4 gl_FragCoord;",
+        "",
+    );
+    try writer.writeAll(builtin_position);
+    try writer.writeAll("\n\n");
+    try writer.writeAll(src);
 }
 
 /// Convert a ShaderToy shader into valid GLSL.

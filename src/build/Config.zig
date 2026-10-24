@@ -204,7 +204,12 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         RendererBackend,
         "renderer",
         "The app runtime to use. Not all values supported on all platforms.",
-    ) orelse RendererBackend.default(target.result, wasm_target);
+    ) orelse if (config.app_runtime == .none and
+        (target.result.os.tag == .windows or target.result.os.tag == .linux))
+        // The embedded library is for the egui sample, which renders with wgpu.
+        .wgpu
+    else
+        RendererBackend.default(target.result, wasm_target);
 
     //---------------------------------------------------------------
     // Feature Flags

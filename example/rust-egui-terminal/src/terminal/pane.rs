@@ -3,7 +3,7 @@ use crate::app::UserEvent;
 mod snapshot_resize;
 
 use crate::ghostty_ffi::{
-    self, GlFrame, Host, SnapshotCell, SnapshotCellRange, SnapshotDecorationLayer,
+    self, GpuFrame, Host, SnapshotCell, SnapshotCellRange, SnapshotDecorationLayer,
     SnapshotDecorationStyle, SnapshotTextRow, SnapshotView, SnapshotViewportOptions,
 };
 use crate::graphics as glow;
@@ -445,9 +445,7 @@ impl TerminalPane {
         let painter = Arc::new(egui::mutex::Mutex::new(painter));
         let callback_painter = Arc::clone(&painter);
 
-        let paint_callback = Arc::new(egui_glow::CallbackFn::new(move |_info, glow_painter| {
-            callback_painter.lock().paint(glow_painter.gl());
-        }));
+        let paint_callback = crate::painter::callback(callback_painter);
         let picker_font = crate::picker::font::PickerFont::new(&wake.context, host);
         let search_worker = SnapshotSearchAdapter::new(wake.context.clone());
         Ok(Self {
@@ -488,7 +486,7 @@ impl TerminalPane {
         self.wake
             .frame_ready_pending
             .store(false, Ordering::Release);
-        let mut frame = GlFrame::default();
+        let mut frame = GpuFrame::default();
         if !unsafe { ghostty_ffi::ghostty_egui_host_take_frame(self.host, &mut frame) } {
             return false;
         }
@@ -686,7 +684,6 @@ impl TerminalPane {
         if let Some(pipe) = &wake.pipe {
             pipe.bind_window(wake.proxy.clone(), wake.window_id);
         }
-        let native = current_native_context();
         let (picker_endpoint, picker_token) = wake.picker_environment();
         let mut error_buffer = [0 as c_char; 2048];
         let host = unsafe {
@@ -694,9 +691,8 @@ impl TerminalPane {
                 argc,
                 argv,
                 (&mut *wake as *mut WakeState).cast(),
-                native.window,
-                native.display,
-                native.context,
+                crate::graphics::current_window(),
+                gl.driver(),
                 egui_ctx.pixels_per_point() as f64,
                 picker_endpoint.as_ptr(),
                 picker_token.as_ptr(),
@@ -778,17 +774,15 @@ impl TerminalPane {
             .transpose()
             .map_err(|e| crate::native_error::FatalError::new("pane directory", e))?;
         let host = unsafe {
-            let native = current_native_context();
             ghostty_ffi::ghostty_egui_host_create_child(
                 self.host,
                 (&mut *wake as *mut WakeState).cast(),
                 if new_window {
-                    native.window
+                    crate::graphics::current_window()
                 } else {
                     std::ptr::null_mut()
                 },
-                native.display,
-                native.context,
+                gl.driver(),
                 ctx.pixels_per_point() as f64,
                 picker_endpoint.as_ptr(),
                 picker_token.as_ptr(),
@@ -3466,43 +3460,5 @@ mod copy_shortcut_tests {
             copy_motion_with_prefix(&mut mode, egui::Key::E, shift),
             Some(Motion::PreviousBigWordEnd)
         );
-    }
-}
-
-struct NativeContext {
-    window: *mut c_void,
-    display: *mut c_void,
-    context: *mut c_void,
-}
-
-#[cfg(target_os = "windows")]
-fn current_native_context() -> NativeContext {
-    unsafe extern "system" {
-        fn wglGetCurrentContext() -> *mut c_void;
-        fn wglGetCurrentDC() -> *mut c_void;
-        fn WindowFromDC(dc: *mut c_void) -> *mut c_void;
-    }
-    unsafe {
-        NativeContext {
-            window: WindowFromDC(wglGetCurrentDC()),
-            display: std::ptr::null_mut(),
-            context: wglGetCurrentContext(),
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn current_native_context() -> NativeContext {
-    #[link(name = "EGL")]
-    unsafe extern "C" {
-        fn eglGetCurrentDisplay() -> *mut c_void;
-        fn eglGetCurrentContext() -> *mut c_void;
-    }
-    unsafe {
-        NativeContext {
-            window: std::ptr::null_mut(),
-            display: eglGetCurrentDisplay(),
-            context: eglGetCurrentContext(),
-        }
     }
 }

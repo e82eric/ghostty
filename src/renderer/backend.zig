@@ -5,6 +5,8 @@ const WasmTarget = @import("../os/wasm/target.zig").Target;
 pub const Backend = enum {
     opengl,
     metal,
+    /// Rendering delegated to an embedding host's wgpu device.
+    wgpu,
 
     pub fn default(
         target: std.Target,

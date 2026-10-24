@@ -166,7 +166,7 @@ fn glDebugMessageCallback(
 }
 
 /// Prepares the provided GL context, loading it with glad.
-pub fn prepareContext(getProcAddress: anytype) !void {
+fn prepareContext(getProcAddress: anytype) !void {
     const version = try gl.glad.load(getProcAddress);
     const major = gl.glad.versionMajor(@intCast(version));
     const minor = gl.glad.versionMinor(@intCast(version));
