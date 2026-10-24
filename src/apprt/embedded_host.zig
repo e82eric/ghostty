@@ -9,54 +9,30 @@ const terminal = @import("../terminal/main.zig");
 const font = @import("../font/main.zig");
 const Surface = @import("embedded.zig").Surface;
 
-const GLFrame = struct {
-    alloc: Allocator,
-    frame: renderer.Renderer.ExportedFrame,
-};
-
-const GLFrameDescription = extern struct {
-    handle: ?*GLFrame,
-    texture: u32,
+const GpuFrameDescription = extern struct {
+    texture: usize,
     width: u32,
     height: u32,
-    generation: u64,
 };
-/// Take the newest frame exported for composition by an OpenGL host.
-/// The caller owns a successful result until ghostty_gl_frame_release.
-export fn ghostty_surface_take_gl_frame(
+
+/// Take the newest frame exported for composition by a wgpu host. The
+/// texture is a resource of the host's own dispatch table, so the host owns
+/// it from here and releases it there; Ghostty no longer references it.
+export fn ghostty_surface_take_gpu_frame(
     surface: *Surface,
-    result: *GLFrameDescription,
+    result: *GpuFrameDescription,
 ) bool {
     @import("../c_api_error.zig").clear();
-    if (comptime renderer.Renderer.ExportedFrame == void or @import("../build_config.zig").renderer != .opengl) return false;
+    if (comptime @import("../build_config.zig").renderer != .wgpu) return false;
 
     const frame = surface.core_surface.renderer.takeFrame() orelse return false;
     const texture = frame.texture;
-
-    const alloc = surface.app.core_app.alloc;
-    const owned = alloc.create(GLFrame) catch |err| {
-        @import("../c_api_error.zig").set(err);
-        frame.deinit();
-        return false;
-    };
-    owned.* = .{ .alloc = alloc, .frame = frame };
     result.* = .{
-        .handle = owned,
-        .texture = texture.texture,
+        .texture = texture.resource.handle,
         .width = texture.width,
         .height = texture.height,
-        .generation = texture.generation,
     };
     return true;
-}
-
-export fn ghostty_gl_frame_release(frame: *GLFrame) void {
-    @import("../c_api_error.zig").clear();
-    if (comptime renderer.Renderer.ExportedFrame != void) {
-        const alloc = frame.alloc;
-        frame.frame.deinit();
-        alloc.destroy(frame);
-    }
 }
 
 const FontVariation = extern struct {

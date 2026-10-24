@@ -150,16 +150,3 @@ pub fn add(
         }).step);
     }
 }
-
-/// Additional GL symbols and WGL support for native Windows embedding.
-pub fn linkWindowsOpenGL(b: *std.Build, step: *std.Build.Step.Compile) void {
-    step.root_module.addIncludePath(b.path("vendor/glad/include"));
-    if (step.kind == .lib) step.root_module.addCSourceFile(.{
-        .file = b.path("vendor/glad/src/gl.c"),
-        .flags = &.{},
-    });
-    step.root_module.addCSourceFile(.{ .file = b.path("src/renderer/opengl/wgl.c"), .flags = &.{} });
-    step.root_module.linkSystemLibrary("opengl32", .{});
-    step.root_module.linkSystemLibrary("gdi32", .{});
-    step.root_module.linkSystemLibrary("user32", .{});
-}

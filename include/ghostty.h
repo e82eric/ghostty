@@ -62,7 +62,6 @@ typedef void* ghostty_app_t;
 typedef void* ghostty_config_t;
 typedef void* ghostty_surface_t;
 typedef void* ghostty_inspector_t;
-typedef void* ghostty_gl_frame_t;
 
 // All the types below are fully defined and must be kept in sync with
 // their Zig counterparts. Any changes to these types MUST have an associated
@@ -71,7 +70,7 @@ typedef enum {
   GHOSTTY_PLATFORM_INVALID,
   GHOSTTY_PLATFORM_MACOS,
   GHOSTTY_PLATFORM_IOS,
-  GHOSTTY_PLATFORM_OPENGL,
+  GHOSTTY_PLATFORM_WGPU,
 } ghostty_platform_e;
 
 typedef enum {
@@ -496,28 +495,43 @@ typedef struct {
   void* uiview;
 } ghostty_platform_ios_s;
 
-// An OpenGL context owned by the embedder and shared with Ghostty's renderer
-// context. On Windows, window is an HWND and context is an HGLRC. On EGL
-// platforms, display is an EGLDisplay and context is an EGLContext.
+// Dispatch table of an embedder that renders with wgpu. Ghostty's renderer
+// threads call it to create resources and encode frames on the embedder's
+// own device and queue; resources are opaque handles owned by the embedder.
+// The table and device must outlive every surface and frame.
+//
+// Version 2. Each call passes 12 uintptr_t arguments and returns nonzero on
+// success (a handle, for operations that create one). Operations:
+//   0 release;  1 create buffer;  2 write buffer;  3 create texture;
+//   4 write texture;  5 begin frame;  6 draw;  7 submit frame;
+//   8 create pipeline;  9 end render pass.
+// See src/renderer/Wgpu.zig for the argument layouts. Calls for one surface
+// come from its renderer thread; calls for different surfaces are concurrent.
 typedef struct {
-  void* window;
-  void* display;
+  uint32_t version;
   void* context;
-} ghostty_platform_opengl_s;
+  uintptr_t (*call)(void*, uint32_t, const uintptr_t (*)[12]);
+} ghostty_wgpu_driver_s;
+
+typedef struct {
+  // The native window, if any. On Windows, an HWND.
+  void* window;
+  const ghostty_wgpu_driver_s* driver;
+} ghostty_platform_wgpu_s;
 
 typedef union {
   ghostty_platform_macos_s macos;
   ghostty_platform_ios_s ios;
-  ghostty_platform_opengl_s opengl;
+  ghostty_platform_wgpu_s wgpu;
 } ghostty_platform_u;
 
+// A finished frame. texture is a handle from the embedder's dispatch table
+// (an exported frame texture); the embedder owns it and releases it there.
 typedef struct {
-  ghostty_gl_frame_t handle;
-  uint32_t texture;
+  uintptr_t texture;
   uint32_t width;
   uint32_t height;
-  uint64_t generation;
-} ghostty_gl_frame_s;
+} ghostty_gpu_frame_s;
 
 
 typedef enum {
@@ -1227,12 +1241,10 @@ GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_refresh(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);
-// Takes ownership of the newest externally composited OpenGL frame. The
-// caller must finish all GPU reads from its texture and release the result
-// with ghostty_gl_frame_release before destroying the surface.
-GHOSTTY_API bool ghostty_surface_take_gl_frame(ghostty_surface_t,
-                                                  ghostty_gl_frame_s*);
-GHOSTTY_API void ghostty_gl_frame_release(ghostty_gl_frame_t);
+// Takes ownership of the newest frame rendered for a wgpu embedder. Returns
+// false when no new frame is available.
+GHOSTTY_API bool ghostty_surface_take_gpu_frame(ghostty_surface_t,
+                                                ghostty_gpu_frame_s*);
 GHOSTTY_API void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);

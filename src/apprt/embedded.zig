@@ -382,12 +382,14 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
-    opengl: OpenGL,
+    wgpu: Wgpu,
 
-    pub const OpenGL = extern struct {
+    /// A host that renders with wgpu and executes Ghostty's GPU work on its
+    /// own device through `driver`.
+    pub const Wgpu = struct {
+        /// The native window, if any (an HWND on Windows).
         window: ?*anyopaque,
-        display: ?*anyopaque,
-        context: *anyopaque,
+        driver: *const @import("../renderer/Wgpu.zig").Driver,
     };
 
     // If our build target for libghostty is not darwin then we do
@@ -413,10 +415,9 @@ pub const Platform = union(PlatformTag) {
             uiview: ?*anyopaque,
         },
 
-        opengl: extern struct {
+        wgpu: extern struct {
             window: ?*anyopaque,
-            display: ?*anyopaque,
-            context: ?*anyopaque,
+            driver: ?*const anyopaque,
         },
     };
 
@@ -438,10 +439,10 @@ pub const Platform = union(PlatformTag) {
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
 
-            .opengl => .{ .opengl = .{
-                .window = c_platform.opengl.window,
-                .display = c_platform.opengl.display,
-                .context = c_platform.opengl.context orelse return error.OpenGLContextMustBeSet,
+            .wgpu => .{ .wgpu = .{
+                .window = c_platform.wgpu.window,
+                .driver = @ptrCast(@alignCast(c_platform.wgpu.driver orelse
+                    return error.WgpuDriverMustBeSet)),
             } },
         };
     }
@@ -453,7 +454,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
-    opengl = 3,
+    wgpu = 3,
 };
 
 pub const EnvVar = extern struct {
