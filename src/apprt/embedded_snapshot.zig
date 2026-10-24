@@ -402,9 +402,22 @@ export fn ghostty_surface_snapshot_apply_decorations(
         @import("../c_api_error.zig").set(err);
         return false;
     };
+    var caret: ?@import("../renderer/SnapshotDecorations.zig").Caret = null;
     for (layers, core_layers) |layer, *dst| {
-        if (layer.style.flags & ~@as(u32, 3) != 0) return false;
+        if (layer.style.flags & ~@as(u32, 3 | 8) != 0) return false;
         const ordered = if (layer.ranges) |ptr| ptr[0..layer.range_count] else if (layer.range_count == 0) &.{} else return false;
+        // Flag bit 3 marks a single-cell caret layer for cursor shaders.
+        if (layer.style.flags & 8 != 0) {
+            if (caret != null or ordered.len != 1 or !std.meta.eql(ordered[0].start, ordered[0].end)) return false;
+            const cell = ordered[0].start;
+            if (cell.y >= viewport.start and cell.y < viewport.end) {
+                _ = snapshotCellPin(screen, cell, anchor) orelse return false;
+                caret = .{
+                    .coord = .{ .x = @intCast(cell.x), .y = @intCast(cell.y - viewport.start) },
+                    .color = layer.style.toCore().background,
+                };
+            }
+        }
         const visible = snapshotVisibleOrderedCellRanges(ordered, viewport);
         const flattened = alloc.alloc(terminal.highlight.Flattened, visible.len) catch |err| {
             @import("../c_api_error.zig").set(err);
@@ -460,7 +473,7 @@ export fn ghostty_surface_snapshot_apply_decorations(
     core_text.items.len = text_len;
     _ = surface.core_surface.renderer_thread.mailbox.push(
         global.io(),
-        .{ .snapshot_decorations = .{ .arena = arena, .layers = core_layers, .text = core_text.items } },
+        .{ .snapshot_decorations = .{ .arena = arena, .layers = core_layers, .text = core_text.items, .caret = caret } },
         .{ .forever = {} },
     );
     owned = false;

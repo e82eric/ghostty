@@ -16,6 +16,14 @@ pub const Layer = struct {
 arena: ArenaAllocator,
 layers: []const Layer,
 text: []const Text = &.{},
+/// Viewport cell of the presentation caret, when visible. Cursor shaders
+/// track it while the terminal cursor is hidden.
+caret: ?Caret = null,
+
+pub const Caret = struct {
+    coord: terminal.Coordinate,
+    color: ?terminal.color.RGB = null,
+};
 
 pub const Text = struct {
     coord: terminal.Coordinate,

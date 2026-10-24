@@ -64,6 +64,12 @@ pub fn end(self: *Snapshot, surface: *Surface) void {
     _ = surface.renderer_thread.mailbox.push(global.io(), .{
         .snapshot_decorations = .{ .arena = empty_arena, .layers = &.{} },
     }, .{ .forever = {} });
+    // Show the live cursor immediately. The key that ended the snapshot never
+    // reached the terminal, so the blink may otherwise be in its hidden phase
+    // and cursor shaders would wait for the next blink to see it.
+    _ = surface.renderer_thread.mailbox.push(global.io(), .{
+        .reset_cursor_blink = {},
+    }, .{ .forever = {} });
 
     snapshot_terminal.deinit(surface.alloc);
     surface.alloc.destroy(snapshot_terminal);

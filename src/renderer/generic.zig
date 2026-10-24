@@ -2547,6 +2547,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     uniforms.current_cursor_color = cursor_color;
                     uniforms.cursor_change_time = uniforms.time;
                 }
+            } else {
+                // Presentation snapshots hide the terminal cursor; track their caret.
+                self.snapshot_overrides.updateCaretUniforms(uniforms, self.size, GraphicsAPI.custom_shader_y_is_down, &self.terminal_state.colors);
             }
 
             // Update focus uniforms

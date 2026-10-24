@@ -48,6 +48,38 @@ pub fn styleForTag(self: *const Self, tag: u8) ?@import("SnapshotDecorations.zig
     return value.layers[index].style;
 }
 
+pub fn caret(self: *const Self) ?@import("SnapshotDecorations.zig").Caret {
+    const value = self.value orelse return null;
+    return value.caret;
+}
+
+/// Report the caret to custom shaders as a full-cell block cursor. Positions
+/// use the renderer's cursor glyph convention: the cursor's +Y edge.
+pub fn updateCaretUniforms(self: *const Self, uniforms: anytype, size: anytype, y_is_down: bool, colors: anytype) void {
+    const value = self.caret() orelse return;
+    const cell = size.cell;
+    const pixel_x: f32 = @floatFromInt(@as(u32, value.coord.x) * cell.width + size.padding.left);
+    const top: f32 = @floatFromInt(@as(u32, value.coord.y) * cell.height + size.padding.top);
+    const cell_height: f32 = @floatFromInt(cell.height);
+    const pixel_y = if (y_is_down) top + cell_height else @as(f32, @floatFromInt(size.screen.height)) - top;
+    const color = value.color orelse colors.cursor orelse colors.foreground;
+    const new_cursor: [4]f32 = .{ pixel_x, pixel_y, @floatFromInt(cell.width), cell_height };
+    const cursor_color: [4]f32 = .{
+        @as(f32, @floatFromInt(color.r)) / 255.0,
+        @as(f32, @floatFromInt(color.g)) / 255.0,
+        @as(f32, @floatFromInt(color.b)) / 255.0,
+        1.0,
+    };
+    uniforms.cursor_visible = 1;
+    if (std.meta.eql(new_cursor, uniforms.current_cursor) and
+        std.meta.eql(cursor_color, uniforms.current_cursor_color)) return;
+    uniforms.previous_cursor = uniforms.current_cursor;
+    uniforms.previous_cursor_color = uniforms.current_cursor_color;
+    uniforms.current_cursor = new_cursor;
+    uniforms.current_cursor_color = cursor_color;
+    uniforms.cursor_change_time = uniforms.time;
+}
+
 pub fn textAt(self: *const Self, x: u16, y: u16) ?@import("SnapshotDecorations.zig").Text {
     const value = self.value orelse return null;
     var lo: usize = 0;
@@ -150,4 +182,52 @@ test "SnapshotOverrides lookup preserves upstream tags and exact cell positions"
     try std.testing.expect(overrides.textAt(4, 1).?.bold);
     try std.testing.expectEqual(@as(u21, 'S'), overrides.textAt(0, 2).?.codepoint);
     try std.testing.expect(overrides.textAt(1, 2) == null);
+}
+
+test "SnapshotOverrides caret uniforms report a block cursor and track moves" {
+    var overrides: Self = .{};
+    defer overrides.deinit();
+    const RGB = terminal.color.RGB;
+    const colors: struct { cursor: ?RGB = null, foreground: RGB = .{ .r = 255, .g = 255, .b = 255 } } = .{};
+    const size = .{
+        .cell = .{ .width = @as(u32, 10), .height = @as(u32, 20) },
+        .padding = .{ .left = @as(u32, 5), .top = @as(u32, 3) },
+        .screen = .{ .height = @as(u32, 200) },
+    };
+    var uniforms: struct {
+        time: f32 = 4,
+        cursor_visible: i32 = 0,
+        current_cursor: [4]f32 = @splat(0),
+        previous_cursor: [4]f32 = @splat(0),
+        current_cursor_color: [4]f32 = @splat(0),
+        previous_cursor_color: [4]f32 = @splat(0),
+        cursor_change_time: f32 = 0,
+    } = .{};
+
+    // No caret leaves the uniforms untouched.
+    overrides.updateCaretUniforms(&uniforms, size, true, &colors);
+    try std.testing.expectEqual(@as(i32, 0), uniforms.cursor_visible);
+
+    overrides.replace(.{
+        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        .layers = &.{},
+        .caret = .{ .coord = .{ .x = 2, .y = 1 }, .color = .{ .r = 255, .g = 0, .b = 0 } },
+    });
+    overrides.updateCaretUniforms(&uniforms, size, true, &colors);
+    try std.testing.expectEqual(@as(i32, 1), uniforms.cursor_visible);
+    try std.testing.expectEqual([4]f32{ 25, 43, 10, 20 }, uniforms.current_cursor);
+    try std.testing.expectEqual([4]f32{ 1, 0, 0, 1 }, uniforms.current_cursor_color);
+    try std.testing.expectEqual(@as(f32, 4), uniforms.cursor_change_time);
+
+    // +Y up measures the top edge from the bottom of the screen.
+    uniforms.time = 5;
+    overrides.updateCaretUniforms(&uniforms, size, false, &colors);
+    try std.testing.expectEqual([4]f32{ 25, 177, 10, 20 }, uniforms.current_cursor);
+    try std.testing.expectEqual([4]f32{ 25, 43, 10, 20 }, uniforms.previous_cursor);
+    try std.testing.expectEqual(@as(f32, 5), uniforms.cursor_change_time);
+
+    // An unchanged caret keeps the previous change time.
+    uniforms.time = 6;
+    overrides.updateCaretUniforms(&uniforms, size, false, &colors);
+    try std.testing.expectEqual(@as(f32, 5), uniforms.cursor_change_time);
 }
