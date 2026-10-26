@@ -1,54 +1,195 @@
-//! Presentation-only snapshot decorations. The terminal and its text are never
-//! mutated. The renderer supplies its normal cell drawing machinery.
+//! Presentation-only snapshot decorations, applied like an overlay pane: after
+//! each render state update they rewrite the renderer's copy of the viewport
+//! cells. The terminal and its text are never mutated, and the renderer draws
+//! decorated cells and replacement text as ordinary cells.
 const std = @import("std");
 const terminal = @import("../terminal/main.zig");
+const Decorations = @import("SnapshotDecorations.zig");
 const Self = @This();
 
-value: ?@import("SnapshotDecorations.zig") = null,
-highlights_dirty: bool = false,
-glyphs_dirty: bool = false,
+value: ?Decorations = null,
+
+/// Set when the decorations change. The old ones are baked into rows of the
+/// render state, so every row has to be copied from the terminal again.
+redraw: bool = false,
 
 pub fn deinit(self: *Self) void {
     if (self.value) |*value| value.arena.deinit();
     self.* = .{};
 }
 
-pub fn replace(self: *Self, value: @import("SnapshotDecorations.zig")) void {
-    const old_text = if (self.value) |old| old.text.len else 0;
-    self.glyphs_dirty = self.glyphs_dirty or old_text > 0 or value.text.len > 0;
+pub fn replace(self: *Self, value: Decorations) void {
     if (self.value) |*old| old.arena.deinit();
     self.value = value;
-    self.highlights_dirty = true;
+    self.redraw = true;
 }
 
-/// Keep full invalidation for text replacement, including removal of labels.
-pub fn invalidate(self: *Self, state: anytype) void {
-    if (self.glyphs_dirty) {
-        self.glyphs_dirty = false;
-        state.dirty = .full;
+/// Call with the terminal locked, before the render state update.
+pub fn prepare(self: *Self, t: *terminal.Terminal) void {
+    if (!self.redraw) return;
+    self.redraw = false;
+    t.flags.dirty.clear = true;
+}
+
+/// Call after the render state update. Only rows the update copied again
+/// (marked dirty) have lost their decorations; the others keep them.
+pub fn apply(self: *const Self, state: *terminal.RenderState) void {
+    const value = self.value orelse return;
+    if (value.layers.len == 0 and value.text.len == 0) return;
+    const row_data = state.row_data.slice();
+    const pins = row_data.items(.pin);
+    const serials = row_data.items(.serial);
+    const dirties = row_data.items(.dirty);
+    const row_cells = row_data.items(.cells);
+    const applied = row_data.items(.applied_styles);
+    const viewport = state.viewportStart();
+    const range = state.rowDataRange();
+    for (range.start..range.end) |i| {
+        if (!dirties[i]) continue;
+        const cells = row_cells[i].slice();
+        const raws = cells.items(.raw);
+        const styles = cells.items(.style);
+        const y: ?u16 = if (i >= viewport and i < viewport + state.rows) @intCast(i - viewport) else null;
+        var changed = false;
+
+        // Earlier layers take priority, so apply them last.
+        var layer_i = value.layers.len;
+        while (layer_i > 0) {
+            layer_i -= 1;
+            const layer = value.layers[layer_i];
+            if (layer.style.foreground == null and layer.style.background == null) continue;
+            for (layer.ranges) |hl| {
+                const span = rowSpan(hl, pins[i], serials[i], state.cols) orelse continue;
+                for (span[0]..@as(usize, span[1]) + 1) |head| {
+                    // A wide character's spacer follows its head, as in the
+                    // renderer's highlight check.
+                    if (raws[head].wide == .spacer_tail) continue;
+                    const end = if (raws[head].wide == .wide) @min(head + 2, raws.len) else head + 1;
+                    for (head..end) |x| {
+                        // Replacement text uses the cell's own colors, not layers.
+                        if (y) |row| if (self.textAt(@intCast(x), row) != null) continue;
+                        var style = cellStyle(&raws[x], styles[x]);
+                        decorate(&style, layer.style, &state.colors);
+                        setStyle(&raws[x], &styles[x], style, x);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if (y) |row| for (self.textInRow(row)) |text| {
+            const x = text.coord.x;
+            if (x >= raws.len) continue;
+            var style = cellStyle(&raws[x], styles[x]);
+            decorate(&style, text.style, &state.colors);
+            style.flags = .{
+                .bold = text.bold,
+                .underline = if (text.underline) .single else .none,
+            };
+            raws[x].content_tag = .codepoint;
+            raws[x].content = .{ .codepoint = .{ .data = text.codepoint } };
+            raws[x].wide = .narrow;
+            setStyle(&raws[x], &styles[x], style, x);
+            changed = true;
+        };
+
+        // The render state skips refilling styles that match this record.
+        if (changed) applied[i].clearRetainingCapacity();
     }
 }
 
-/// Tags 0 and 1 remain reserved for upstream search highlights.
-pub fn updateHighlights(self: *Self, alloc: std.mem.Allocator, state: anytype) void {
-    self.highlights_dirty = false;
-    const value = self.value orelse return;
-    for (value.layers, 0..) |layer, index| {
-        state.updateHighlightsFlattened(alloc, @intCast(index + 2), layer.ranges) catch |err| {
-            std.log.scoped(.snapshot_overrides).warn("error updating snapshot decoration err={}", .{err});
+/// The columns of `hl` in the row at `pin`, mirroring
+/// `RenderState.updateHighlightsFlattened`.
+fn rowSpan(
+    hl: terminal.highlight.Flattened,
+    pin: terminal.PageList.Pin,
+    serial: u64,
+    cols: terminal.size.CellCountInt,
+) ?[2]terminal.size.CellCountInt {
+    const chunks = hl.chunks.slice();
+    const nodes = chunks.items(.node);
+    const serials = chunks.items(.serial);
+    const starts = chunks.items(.start);
+    const ends = chunks.items(.end);
+    for (0.., nodes) |i, node| {
+        if (node != pin.node or
+            serials[i] != serial or
+            pin.y < starts[i] or
+            pin.y >= ends[i]) continue;
+        return .{
+            if (i == 0 and pin.y == starts[0]) hl.top_x else 0,
+            if (i == nodes.len - 1 and pin.y == ends[nodes.len - 1] - 1) hl.bot_x else cols - 1,
         };
     }
+    return null;
 }
 
-pub fn styleForTag(self: *const Self, tag: u8) ?@import("SnapshotDecorations.zig").Style {
-    if (tag < 2) return null;
+/// The cell's style, moving a background-only cell's color into the style.
+fn cellStyle(raw: *terminal.page.Cell, style: terminal.Style) terminal.Style {
+    var result: terminal.Style = if (raw.hasStyling()) style else .{};
+    switch (raw.content_tag) {
+        .bg_color_palette => result.bg_color = .{ .palette = raw.content.color_palette.data },
+        .bg_color_rgb => {
+            const rgb = raw.content.color_rgb;
+            result.bg_color = .{ .rgb = .{ .r = rgb.r, .g = rgb.g, .b = rgb.b } };
+        },
+        .codepoint, .codepoint_grapheme => return result,
+    }
+    raw.content_tag = .codepoint;
+    raw.content = .{ .codepoint = .{ .data = 0 } };
+    return result;
+}
+
+/// Override the colors a decoration sets. The others keep the cell's colors,
+/// so an inverse cell is resolved first.
+fn decorate(style: *terminal.Style, decoration: Decorations.Style, colors: *const terminal.RenderState.Colors) void {
+    if (decoration.foreground == null and decoration.background == null) return;
+    if (style.flags.inverse) {
+        const fg = style.fg_color;
+        style.fg_color = if (style.bg_color == .none) .{ .rgb = colors.background } else style.bg_color;
+        style.bg_color = if (fg == .none) .{ .rgb = colors.foreground } else fg;
+        style.flags.inverse = false;
+    }
+    if (decoration.foreground) |rgb| style.fg_color = .{ .rgb = rgb };
+    if (decoration.background) |rgb| style.bg_color = .{ .rgb = rgb };
+}
+
+fn setStyle(raw: *terminal.page.Cell, dst: *terminal.Style, style: terminal.Style, x: usize) void {
+    // Any non-default ID makes the renderer read the style. Text shaping
+    // treats equal neighboring IDs as equal styles, so alternate them.
+    raw.style_id = std.math.maxInt(@TypeOf(raw.style_id)) - @as(@TypeOf(raw.style_id), @intCast(x & 1));
+    dst.* = style;
+}
+
+/// Replacement text in viewport row `y`, sorted by column.
+fn textInRow(self: *const Self, y: u16) []const Decorations.Text {
+    const value = self.value orelse return &.{};
+    const start = lowerBound(value.text, .{ .x = 0, .y = y });
+    var end = start;
+    while (end < value.text.len and value.text[end].coord.y == y) end += 1;
+    return value.text[start..end];
+}
+
+fn textAt(self: *const Self, x: u16, y: u16) ?Decorations.Text {
     const value = self.value orelse return null;
-    const index = tag - 2;
-    if (index >= value.layers.len) return null;
-    return value.layers[index].style;
+    const i = lowerBound(value.text, .{ .x = x, .y = y });
+    if (i < value.text.len and value.text[i].coord.x == x and value.text[i].coord.y == y)
+        return value.text[i];
+    return null;
 }
 
-pub fn caret(self: *const Self) ?@import("SnapshotDecorations.zig").Caret {
+fn lowerBound(text: []const Decorations.Text, coord: terminal.Coordinate) usize {
+    var lo: usize = 0;
+    var hi = text.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const c = text[mid].coord;
+        if (c.y < coord.y or (c.y == coord.y and c.x < coord.x)) lo = mid + 1 else hi = mid;
+    }
+    return lo;
+}
+
+pub fn caret(self: *const Self) ?Decorations.Caret {
     const value = self.value orelse return null;
     return value.caret;
 }
@@ -80,108 +221,166 @@ pub fn updateCaretUniforms(self: *const Self, uniforms: anytype, size: anytype, 
     uniforms.cursor_change_time = uniforms.time;
 }
 
-pub fn textAt(self: *const Self, x: u16, y: u16) ?@import("SnapshotDecorations.zig").Text {
-    const value = self.value orelse return null;
-    var lo: usize = 0;
-    var hi = value.text.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        const coord = value.text[mid].coord;
-        if (coord.y < y or (coord.y == y and coord.x < x)) lo = mid + 1 else hi = mid;
-    }
-    if (lo < value.text.len and value.text[lo].coord.x == x and value.text[lo].coord.y == y)
-        return value.text[lo];
-    return null;
-}
+const TestState = struct {
+    t: terminal.Terminal,
+    state: terminal.RenderState = .empty,
 
-/// Use the renderer's font atlas and GPU cell buffers for replacement glyphs.
-pub fn drawText(r: anytype, text: @import("SnapshotDecorations.zig").Text, color: terminal.color.RGB) !void {
-    if (text.underline) {
-        const font = @import("../font/main.zig");
-        const line = try r.font_grid.renderGlyph(r.alloc, font.sprite_index, @intFromEnum(font.Sprite.underline), .{
-            .cell_width = 1,
-            .grid_metrics = r.grid_metrics,
-        });
-        try r.cells.add(r.alloc, .underline, .{
-            .atlas = .grayscale,
-            .grid_pos = .{ text.coord.x, @intCast(text.coord.y) },
-            .color = .{ color.r, color.g, color.b, 255 },
-            .glyph_pos = .{ line.glyph.atlas_x, line.glyph.atlas_y },
-            .glyph_size = .{ line.glyph.width, line.glyph.height },
-            .bearings = .{ @intCast(line.glyph.offset_x), @intCast(line.glyph.offset_y) },
-        });
+    fn init(text: []const u8) !TestState {
+        var result: TestState = .{ .t = try .init(std.testing.io, std.testing.allocator, .{ .cols = 10, .rows = 2 }) };
+        var s = result.t.vtStream();
+        defer s.deinit();
+        s.nextSlice(text);
+        return result;
     }
-    const render = (try r.font_grid.renderCodepoint(r.alloc, text.codepoint, if (text.bold) .bold else .regular, .text, .{
-        .cell_width = 1,
-        .grid_metrics = r.grid_metrics,
-        .thicken = r.config.font_thicken,
-        .thicken_strength = r.config.font_thicken_strength,
-    })) orelse return;
-    try r.cells.add(r.alloc, .text, .{
-        .atlas = .grayscale,
-        .grid_pos = .{ text.coord.x, @intCast(text.coord.y) },
-        .color = .{ color.r, color.g, color.b, 255 },
-        .glyph_pos = .{ render.glyph.atlas_x, render.glyph.atlas_y },
-        .glyph_size = .{ render.glyph.width, render.glyph.height },
-        .bearings = .{ @intCast(render.glyph.offset_x), @intCast(render.glyph.offset_y) },
-    });
-}
 
-test "SnapshotOverrides removing text invalidates glyphs but ranges alone do not" {
+    fn deinit(self: *TestState) void {
+        self.state.deinit(std.testing.allocator);
+        self.t.deinit(std.testing.allocator);
+    }
+
+    fn update(self: *TestState, overrides: *Self) !void {
+        overrides.prepare(&self.t);
+        try self.state.update(std.testing.allocator, &self.t);
+        overrides.apply(&self.state);
+        @memset(self.state.row_data.items(.dirty), false);
+    }
+
+    fn cell(self: *TestState, x: usize, y: usize) terminal.RenderState.Cell {
+        const row = self.state.row_data.items(.cells)[self.state.viewportStart() + y];
+        return row.get(x);
+    }
+
+    fn highlight(self: *TestState, arena: std.mem.Allocator, x0: u16, x1: u16, y: u16) !terminal.highlight.Flattened {
+        const pages = &self.t.screens.active.pages;
+        return terminal.highlight.Flattened.init(
+            arena,
+            pages.pin(.{ .viewport = .{ .x = x0, .y = y } }).?,
+            pages.pin(.{ .viewport = .{ .x = x1, .y = y } }).?,
+        );
+    }
+};
+
+test "SnapshotOverrides replaces text in the render state only" {
+    var ts: TestState = try .init("hello");
+    defer ts.deinit();
     var overrides: Self = .{};
     defer overrides.deinit();
-    const text: @import("SnapshotDecorations.zig").Text = .{
-        .coord = .{ .x = 2, .y = 3 },
-        .codepoint = 'A',
-        .style = .{},
-    };
+    const gold: terminal.color.RGB = .{ .r = 215, .g = 153, .b = 33 };
     overrides.replace(.{
         .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
         .layers = &.{},
-        .text = &.{text},
+        .text = &.{.{ .coord = .{ .x = 1, .y = 0 }, .codepoint = 'A', .style = .{ .foreground = gold }, .bold = true, .underline = true }},
     });
-    const Dirty = enum { false, partial, full };
-    var state: struct { dirty: Dirty = .false } = .{};
-    overrides.invalidate(&state);
-    try std.testing.expectEqual(Dirty.full, state.dirty);
-    overrides.replace(.{
-        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .layers = &.{},
-    });
-    state.dirty = .false;
-    overrides.invalidate(&state);
-    try std.testing.expectEqual(Dirty.full, state.dirty);
-    overrides.replace(.{
-        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .layers = &.{},
-    });
-    state.dirty = .false;
-    overrides.invalidate(&state);
-    try std.testing.expectEqual(Dirty.false, state.dirty);
-    try std.testing.expect(overrides.highlights_dirty);
+    try ts.update(&overrides);
+
+    const label = ts.cell(1, 0);
+    try std.testing.expectEqual(@as(u21, 'A'), label.raw.codepoint());
+    try std.testing.expect(label.raw.hasStyling());
+    try std.testing.expect(label.style.flags.bold);
+    try std.testing.expectEqual(.single, label.style.flags.underline);
+    try std.testing.expect(label.style.fg_color.eql(.{ .rgb = gold }));
+    try std.testing.expectEqual(@as(u21, 'h'), ts.cell(0, 0).raw.codepoint());
+    try std.testing.expect(!ts.cell(0, 0).raw.hasStyling());
+
+    // The terminal itself is untouched.
+    const pages = &ts.t.screens.active.pages;
+    try std.testing.expectEqual(@as(u21, 'e'), pages.pin(.{ .viewport = .{ .x = 1, .y = 0 } }).?.rowAndCell().cell.codepoint());
+
+    // Unchanged rows keep the label across updates that don't copy them.
+    try ts.update(&overrides);
+    try std.testing.expectEqual(@as(u21, 'A'), ts.cell(1, 0).raw.codepoint());
+
+    // Removing the label restores the original cell.
+    overrides.replace(.{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator), .layers = &.{} });
+    try ts.update(&overrides);
+    try std.testing.expectEqual(@as(u21, 'e'), ts.cell(1, 0).raw.codepoint());
+    try std.testing.expect(!ts.cell(1, 0).raw.hasStyling());
 }
 
-test "SnapshotOverrides lookup preserves upstream tags and exact cell positions" {
+test "SnapshotOverrides earlier layers take priority and resolve inverse" {
+    var ts: TestState = try .init("\x1b[7mhello\x1b[0m");
+    defer ts.deinit();
     var overrides: Self = .{};
     defer overrides.deinit();
-    const style: @import("SnapshotDecorations.zig").Style = .{ .foreground = .{ .r = 215, .g = 153, .b = 33 } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const red: terminal.color.RGB = .{ .r = 255, .g = 0, .b = 0 };
+    const blue: terminal.color.RGB = .{ .r = 0, .g = 0, .b = 255 };
+    const layers = try arena.allocator().dupe(Decorations.Layer, &.{
+        .{ .style = .{ .background = red }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 1, 1, 0)}) },
+        .{ .style = .{ .background = blue }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 1, 2, 0)}) },
+    });
+    overrides.replace(.{ .arena = arena, .layers = layers });
+    try ts.update(&overrides);
+
+    const first = ts.cell(1, 0);
+    try std.testing.expect(first.style.bg_color.eql(.{ .rgb = red }));
+    try std.testing.expect(!first.style.flags.inverse);
+    // The inverse cell's foreground is the default background.
+    try std.testing.expect(first.style.fg_color.eql(.{ .rgb = ts.state.colors.background }));
+    try std.testing.expect(ts.cell(2, 0).style.bg_color.eql(.{ .rgb = blue }));
+    try std.testing.expect(ts.cell(3, 0).style.flags.inverse);
+    // Neighboring decorated cells never share a style ID.
+    try std.testing.expect(first.raw.style_id != ts.cell(2, 0).raw.style_id);
+}
+
+test "SnapshotOverrides layers cover wide characters by their head" {
+    // "a", wide "中" at columns 1-2, "b", and "é" as a grapheme at column 4.
+    var ts: TestState = try .init("a中be\u{301}");
+    defer ts.deinit();
+    var overrides: Self = .{};
+    defer overrides.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const red: terminal.color.RGB = .{ .r = 255, .g = 0, .b = 0 };
+    const blue: terminal.color.RGB = .{ .r = 0, .g = 0, .b = 255 };
+    const layers = try arena.allocator().dupe(Decorations.Layer, &.{
+        // Ends on the wide head, so its spacer is included.
+        .{ .style = .{ .background = red }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 0, 1, 0)}) },
+        // Starts on the spacer, so only the following cells are covered.
+        .{ .style = .{ .background = blue }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 2, 4, 0)}) },
+    });
+    overrides.replace(.{ .arena = arena, .layers = layers });
+    try ts.update(&overrides);
+
+    try std.testing.expectEqual(.wide, ts.cell(1, 0).raw.wide);
+    try std.testing.expectEqual(.spacer_tail, ts.cell(2, 0).raw.wide);
+    try std.testing.expect(ts.cell(1, 0).style.bg_color.eql(.{ .rgb = red }));
+    try std.testing.expect(ts.cell(2, 0).style.bg_color.eql(.{ .rgb = red }));
+    try std.testing.expect(ts.cell(3, 0).style.bg_color.eql(.{ .rgb = blue }));
+    // Decorating keeps the cell's text, including combining marks.
+    const accent = ts.cell(4, 0);
+    try std.testing.expect(accent.style.bg_color.eql(.{ .rgb = blue }));
+    try std.testing.expectEqual(.codepoint_grapheme, accent.raw.content_tag);
+    try std.testing.expectEqualSlices(u21, &.{0x301}, accent.grapheme);
+}
+
+test "SnapshotOverrides text replaces graphemes and wide characters" {
+    var ts: TestState = try .init("中e\u{301}");
+    defer ts.deinit();
+    var overrides: Self = .{};
+    defer overrides.deinit();
     overrides.replace(.{
         .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .layers = &.{.{ .style = style, .ranges = &.{} }},
+        .layers = &.{},
         .text = &.{
-            .{ .coord = .{ .x = 4, .y = 1 }, .codepoint = 'A', .style = style, .bold = true },
-            .{ .coord = .{ .x = 0, .y = 2 }, .codepoint = 'S', .style = style },
+            .{ .coord = .{ .x = 0, .y = 0 }, .codepoint = 'A', .style = .{} },
+            .{ .coord = .{ .x = 2, .y = 0 }, .codepoint = 'S', .style = .{} },
         },
     });
-    try std.testing.expect(overrides.styleForTag(0) == null);
-    try std.testing.expect(overrides.styleForTag(1) == null);
-    try std.testing.expectEqualDeep(style, overrides.styleForTag(2).?);
-    try std.testing.expect(overrides.styleForTag(3) == null);
-    try std.testing.expect(overrides.textAt(3, 1) == null);
-    try std.testing.expectEqual(@as(u21, 'A'), overrides.textAt(4, 1).?.codepoint);
-    try std.testing.expect(overrides.textAt(4, 1).?.bold);
-    try std.testing.expectEqual(@as(u21, 'S'), overrides.textAt(0, 2).?.codepoint);
-    try std.testing.expect(overrides.textAt(1, 2) == null);
+    try ts.update(&overrides);
+
+    try std.testing.expectEqual(@as(u21, 'A'), ts.cell(0, 0).raw.codepoint());
+    try std.testing.expectEqual(.narrow, ts.cell(0, 0).raw.wide);
+    try std.testing.expectEqual(.spacer_tail, ts.cell(1, 0).raw.wide);
+    try std.testing.expectEqual(@as(u21, 'S'), ts.cell(2, 0).raw.codepoint());
+    try std.testing.expectEqual(.codepoint, ts.cell(2, 0).raw.content_tag);
+
+    // Removing the labels restores the original characters.
+    overrides.replace(.{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator), .layers = &.{} });
+    try ts.update(&overrides);
+    try std.testing.expectEqual(@as(u21, 0x4e2d), ts.cell(0, 0).raw.codepoint());
+    try std.testing.expectEqual(.wide, ts.cell(0, 0).raw.wide);
+    try std.testing.expectEqual(.codepoint_grapheme, ts.cell(2, 0).raw.content_tag);
+    try std.testing.expectEqualSlices(u21, &.{0x301}, ts.cell(2, 0).grapheme);
 }
 
 test "SnapshotOverrides caret uniforms report a block cursor and track moves" {

@@ -355,7 +355,6 @@ export fn ghostty_surface_snapshot_apply_decorations(
     viewport_options: ?*const SnapshotViewportOptions,
 ) bool {
     @import("../c_api_error.zig").clear();
-    if (layer_count > 254) return false;
     const layers = if (layers_ptr) |ptr| ptr[0..layer_count] else if (layer_count == 0) &.{} else return false;
     const text = if (text_ptr) |ptr| ptr[0..text_count] else if (text_count == 0) &.{} else return false;
     const state = &surface.core_surface.renderer_state;
