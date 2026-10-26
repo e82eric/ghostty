@@ -139,7 +139,7 @@ export fn ghostty_config_theme_directories(userdata: ?*anyopaque, callback: *con
     defer arena.deinit();
     var iter: @import("theme.zig").LocationIterator = .{ .arena_alloc = arena.allocator() };
     while (iter.next() catch return false) |location| {
-        const path = arena.allocator().dupeZ(u8, location.dir) catch return false;
+        const path = arena.allocator().dupeSentinel(u8, location.dir, 0) catch return false;
         callback(userdata, path);
     }
     return true;

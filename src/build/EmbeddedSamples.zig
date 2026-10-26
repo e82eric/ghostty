@@ -22,17 +22,15 @@ pub fn add(
             else => return error.UnsupportedConPtyArchitecture,
         };
         const conpty = b.addSystemCommand(&.{
-            if (builtin.os.tag == .windows) "powershell.exe" else "pwsh",
+            if (builtin.target.os.tag == .windows) "powershell.exe" else "pwsh",
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            b.pathFromRoot("example/rust-egui-terminal/conpty.ps1"),
-            "-Architecture",
-            conpty_arch,
-            "-Destination",
-            b.getInstallPath(.bin, ""),
         });
+        conpty.addFileArg(b.path("example/rust-egui-terminal/conpty.ps1"));
+        conpty.addArgs(&.{ "-Architecture", conpty_arch, "-Destination" });
+        conpty.addDirectoryArg2(b.graph.path(.install_bin, ""), .{ .make_absolute = true });
         conpty.has_side_effects = true;
         const conpty_step = b.step("conpty", "Install the pinned Windows ConPTY DLL and console host");
         conpty_step.dependOn(&conpty.step);
@@ -47,34 +45,14 @@ pub fn add(
         const egui_step = b.step("egui-sample", "Build the egui terminal sample");
         egui_step.dependOn(&conpty.step);
         resources.addStepDependencies(egui_step);
-        const cargo = b.addSystemCommand(&.{
-            "cargo",
-            "build",
-            "--manifest-path",
-            b.pathFromRoot("example/rust-egui-terminal/Cargo.toml"),
-            "--release",
-            "--target-dir",
-            b.pathFromRoot(".zig-cache/egui-target"),
-        });
-        cargo.has_side_effects = true;
-        cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
-        cargo.setEnvironmentVariable("GHOSTTY_LIB_DIR", b.getInstallPath(.lib, ""));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt-static");
-        cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/src/ghostty_shim.c"));
-        cargo.addFileInput(b.path("include/ghostty.h"));
+        const cargo = cargoBuild(b, "ghostty-vt-static");
         cargo.step.dependOn(&import_lib_install.step);
         cargo.step.dependOn(&b.addInstallLibFile(
             libghostty_vt_static.output,
             "ghostty-vt-static.lib",
         ).step);
         const egui_exe_install = b.addInstallFileWithDir(
-            .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui.exe") },
+            b.path(".zig-cache/egui-target/release/ghostty_egui.exe"),
             .bin,
             "ghostty_egui.exe",
         );
@@ -101,34 +79,14 @@ pub fn add(
 
         const egui_step = b.step("egui-sample", "Build the egui terminal sample");
         resources.addStepDependencies(egui_step);
-        const cargo = b.addSystemCommand(&.{
-            "cargo",
-            "build",
-            "--manifest-path",
-            b.pathFromRoot("example/rust-egui-terminal/Cargo.toml"),
-            "--release",
-            "--target-dir",
-            b.pathFromRoot(".zig-cache/egui-target"),
-        });
-        cargo.has_side_effects = true;
-        cargo.setEnvironmentVariable("GHOSTTY_ROOT", b.pathFromRoot("."));
-        cargo.setEnvironmentVariable("GHOSTTY_LIB_DIR", b.getInstallPath(.lib, ""));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_INCLUDE_DIR", b.pathFromRoot("include"));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_DIR", b.getInstallPath(.lib, ""));
-        cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", "ghostty-vt");
-        cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
-        cargo.addFileInput(b.path("example/rust-egui-terminal/src/ghostty_shim.c"));
-        cargo.addFileInput(b.path("include/ghostty.h"));
+        const cargo = cargoBuild(b, "ghostty-vt");
         cargo.step.dependOn(&public_lib_install.step);
         cargo.step.dependOn(&b.addInstallLibFile(
             libghostty_vt_static.output,
             "libghostty-vt.a",
         ).step);
         const egui_exe_install = b.addInstallFileWithDir(
-            .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/ghostty_egui") },
+            b.path(".zig-cache/egui-target/release/ghostty_egui"),
             .bin,
             "ghostty_egui",
         );
@@ -136,7 +94,7 @@ pub fn add(
         egui_step.dependOn(&egui_exe_install.step);
         // The shell-side client for the picker socket.
         const npick_install = b.addInstallFileWithDir(
-            .{ .cwd_relative = b.pathFromRoot(".zig-cache/egui-target/release/npick") },
+            b.path(".zig-cache/egui-target/release/npick"),
             .bin,
             "npick",
         );
@@ -149,4 +107,35 @@ pub fn add(
             .install_subdir = "share/ghostty-egui/lua",
         }).step);
     }
+}
+
+/// Install paths are only known while the build runs, so they reach the
+/// build scripts as cargo `[env]` settings rather than environment variables.
+fn cargoBuild(b: *std.Build, vt_lib_name: []const u8) *std.Build.Step.Run {
+    const cargo = b.addSystemCommand(&.{ "cargo", "build", "--manifest-path" });
+    cargo.addFileArg(b.path("example/rust-egui-terminal/Cargo.toml"));
+    cargo.addArgs(&.{ "--release", "--target-dir" });
+    cargo.addDirectoryArg2(b.path(".zig-cache/egui-target"), .{ .make_absolute = true });
+    cargoEnv(cargo, "GHOSTTY_LIB_DIR", b.graph.path(.install_lib, ""));
+    cargoEnv(cargo, "NFM_GHOSTTY_VT_INCLUDE_DIR", b.path("include"));
+    cargoEnv(cargo, "NFM_GHOSTTY_VT_LIB_DIR", b.graph.path(.install_lib, ""));
+    cargo.setEnvironmentVariable("NFM_GHOSTTY_VT_LIB_NAME", vt_lib_name);
+    cargo.has_side_effects = true;
+    cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.toml"));
+    cargo.addFileInput(b.path("example/rust-egui-terminal/Cargo.lock"));
+    cargo.addFileInput(b.path("example/rust-egui-terminal/build.rs"));
+    cargo.addFileInput(b.path("example/rust-egui-terminal/src/main.rs"));
+    cargo.addFileInput(b.path("example/rust-egui-terminal/src/ghostty_shim.c"));
+    cargo.addFileInput(b.path("include/ghostty.h"));
+    return cargo;
+}
+
+/// A TOML literal string keeps Windows backslashes as written.
+fn cargoEnv(cargo: *std.Build.Step.Run, key: []const u8, dir: std.Build.LazyPath) void {
+    cargo.addArg("--config");
+    cargo.addDirectoryArg2(dir, .{
+        .prefix = cargo.step.owner.fmt("env.{s}='", .{key}),
+        .suffix = "'",
+        .make_absolute = true,
+    });
 }

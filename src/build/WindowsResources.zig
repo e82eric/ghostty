@@ -3,14 +3,15 @@ const std = @import("std");
 
 pub fn compileTerminfo(b: *std.Build, source: std.Build.LazyPath, terminfo_share_dir: []const u8) !*std.Build.Step {
     const compiler = b.option([]const u8, "terminfo-compiler", "Path to tic for compiling the Windows terminfo database") orelse blk: {
+        if (b.findProgram(.{ .names = &.{"tic"} })) |found| break :blk found;
         var search: std.ArrayList([]const u8) = .empty;
         defer search.deinit(b.allocator);
         inline for (.{ "ProgramFiles", "ProgramFiles(x86)" }) |key| {
             if (b.graph.environ_map.get(key)) |base| {
-                try search.append(b.allocator, b.fmt("{s}/Git/usr/bin", .{base}));
+                try search.append(b.allocator, b.fmt("{s}/Git/usr/bin/tic", .{base}));
             }
         }
-        break :blk b.findProgram(&.{"tic"}, search.items) catch {
+        break :blk b.findProgram(.{ .names = search.items }) orelse {
             std.log.err("Windows resources require tic: install Git for Windows or pass -Dterminfo-compiler=<path to tic>", .{});
             return error.TerminfoCompilerNotFound;
         };

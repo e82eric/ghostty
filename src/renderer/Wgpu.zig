@@ -66,7 +66,7 @@ fn active() *const Driver {
 }
 
 fn args0(a: usize) [12]usize {
-    var a_ = [_]usize{0} ** 12;
+    var a_: [12]usize = @splat(0);
     a_[0] = a;
     return a_;
 }
@@ -412,11 +412,11 @@ pub const shaders = struct {
         fn init(alloc: Allocator, custom: []const [:0]const u8) !Shaders {
             var result: Shaders = .{ .pipelines = undefined };
             var n: usize = 0;
-            errdefer inline for (std.meta.fields(@TypeOf(result.pipelines)), 0..) |field, i| {
-                if (i < n) @field(result.pipelines, field.name).deinit();
+            errdefer inline for (@typeInfo(@TypeOf(result.pipelines)).@"struct".field_names, 0..) |name, i| {
+                if (i < n) @field(result.pipelines, name).deinit();
             };
-            inline for (std.meta.fields(@TypeOf(result.pipelines)), 0..) |field, i| {
-                @field(result.pipelines, field.name) = try Pipeline.init(i, &.{});
+            inline for (@typeInfo(@TypeOf(result.pipelines)).@"struct".field_names, 0..) |name, i| {
+                @field(result.pipelines, name) = try Pipeline.init(i, &.{});
                 n += 1;
             }
 
@@ -435,8 +435,8 @@ pub const shaders = struct {
         pub fn deinit(self: *Shaders, alloc: Allocator) void {
             if (self.defunct) return;
             self.defunct = true;
-            inline for (std.meta.fields(@TypeOf(self.pipelines))) |field| {
-                @field(self.pipelines, field.name).deinit();
+            inline for (@typeInfo(@TypeOf(self.pipelines)).@"struct".field_names) |name| {
+                @field(self.pipelines, name).deinit();
             }
             for (self.post_pipelines) |p| p.deinit();
             alloc.free(self.post_pipelines);
