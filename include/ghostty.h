@@ -1173,13 +1173,12 @@ typedef enum {
 
 GHOSTTY_API int ghostty_init(uintptr_t, char**);
 GHOSTTY_API int ghostty_init_utf8(uintptr_t, char**);
-// Borrowed, thread-local error name for the last init/config creation/loading/
-// finalization/app creation/surface creation operation, or NULL on success.
-// Copy before starting another such operation. Recoverable config diagnostics
+// Borrowed, thread-local error name for the last failed native operation,
+// including init/config creation/loading/finalization/app creation/surface
+// creation and synchronous embedded operations, or NULL on success. Copy it
+// before starting another such operation. NULL/false results with no error
+// can represent normal absence or boundaries. Recoverable config diagnostics
 // are available separately through ghostty_config_get_diagnostic.
-GHOSTTY_API const char* ghostty_last_init_error(void);
-// Thread-local caught native error for synchronous embedded operations.
-// NULL/false results with no error can represent normal absence or boundaries.
 GHOSTTY_API const char* ghostty_last_error(void);
 GHOSTTY_API void ghostty_clear_error(void);
 GHOSTTY_API void ghostty_cli_try_action(void);

@@ -4,10 +4,6 @@ const builtin = @import("builtin");
 const assert = @import("quirks.zig").inlineAssert;
 const global = @import("global.zig");
 
-pub export fn ghostty_last_init_error() ?[*:0]const u8 {
-    return @import("c_api_error.zig").get();
-}
-
 pub export fn ghostty_last_error() ?[*:0]const u8 {
     return @import("c_api_error.zig").get();
 }

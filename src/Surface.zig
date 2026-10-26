@@ -1447,6 +1447,7 @@ fn passwordInput(self: *Surface, v: bool) !void {
         // waste time doing anything more.
         const old = self.io.terminal.flags.password_input;
         if (old == v) return;
+
         self.io.terminal.flags.password_input = v;
     }
 

@@ -12,11 +12,10 @@ the smaller integration hooks in existing Ghostty files.
 | `terminal/SnapshotStyleRuns.zig` | Resolved, coalesced style runs captured once for Rust document previews | Snapshot style-run C API |
 | `terminal/ReflowMap.zig` | Sorted cell segments and per-source-row offset index | `PageList.zig` records cell movement during reflow; Rust performs indexed lookups |
 | `renderer/SnapshotDecorations.zig` | Owned decoration message payload | One renderer message variant |
-| `renderer/SnapshotOverrides.zig` | Decoration indexing, highlights, and replacement glyph drawing | Renderer lifecycle and cell-drawing hooks |
+| `renderer/SnapshotOverrides.zig` | Overlay that patches decoration colors and replacement text into the render state; caret shader uniforms | Renderer lifecycle, `prepare`/`apply` around the render state update, and caret uniforms |
 | `renderer/Wgpu.zig` | Graphics API that forwards GPU operations to the host's wgpu device and exports frames as host textures | `renderer.zig` backend selection and the `wgpu` platform |
 | `os/ConPty.zig` | Load the application-local ConPTY DLL with system fallback | Windows PTY lifecycle |
 | `termio/host_process.zig` | Shell process identity, MSYS terminfo paths, and Windows quit signaling | Exec lifecycle hooks |
-| `termio/resize_diagnostics.zig` | Coordinate-only resize diagnostic logging | Resize and cursor-report hooks |
 | `c_api_host.zig` | Host initialization, argument quoting, and error accessors | C initialization wrapper and export import |
 | `config/c_api_host.zig` | Theme and font overrides, theme-directory enumeration | Config C API export import |
 | `config/c_get_host.zig` | Extra configuration value conversions | Config getter hooks |

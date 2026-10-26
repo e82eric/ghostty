@@ -879,8 +879,6 @@ pub const StreamHandler = struct {
                 });
                 msg.write_small.len = @intCast(resp.len);
 
-                @import("resize_diagnostics.zig").cursor(log, self.terminal, pos);
-
                 self.messageWriter(msg);
             },
 
