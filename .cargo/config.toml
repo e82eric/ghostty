@@ -1,3 +1,0 @@
-[env]
-GHOSTTY_ROOT = { value = ".", relative = true }
-

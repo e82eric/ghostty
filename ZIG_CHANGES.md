@@ -17,21 +17,21 @@ handshake. A separate immutable document remains a proposed alternative.
 
 ### build.zig
 
-#### Chunk 1: Register embedded sample builds
+#### Chunk 1: Register the host library install
 
 ```diff
 @@ -237,6 +237,7 @@ pub fn build(b: *std.Build) !void {
                  lib_shared.install("ghostty-internal.so");
                  lib_static.install("ghostty-internal.a");
              }
-+            try @import("src/build/EmbeddedSamples.zig").add(b, &config, lib_shared, libghostty_vt_static, resources);
++            try @import("src/build/HostLibrary.zig").add(b, &config, lib_shared, libghostty_vt_static, resources);
          }
      }
 ```
 
-**Why it is needed:** Needed to expose the native host build targets through the normal build graph.
+**Why it is needed:** Needed to expose the libraries external hosts link against through the normal build graph.
 
-**How it works:** Calls EmbeddedSamples.add after the embedding and VT libraries and resources have been constructed. The detailed build implementation stays in a separate module.
+**How it works:** Calls HostLibrary.add after the embedding and VT libraries and resources have been constructed. The detailed build implementation stays in a separate module.
 
 ### src/Surface.zig
 
@@ -2684,24 +2684,16 @@ requested padding, clamped to the available history and short-window height.
 Needed by snapshot decoration application when copy/search navigation reveals a
 match. Pure tests cover edges, short windows, and zero padding.
 
-### src/build/EmbeddedSamples.zig
+### src/build/HostLibrary.zig
 
-**Public API / types:** `add`, `linkWindowsOpenGL`.
+**Public API / types:** `add`.
 
-Defines egui-sample, installs the embedding library/import library,
-builds the Rust host, supplies the VT library paths required by NFM preview
-code, and installs runtime artifacts/resources. On Windows it invokes conpty.ps1
-for the pinned architecture-specific ConPTY runtime and adds the conpty target.
-The non-Windows path installs a public libghostty.so and builds the Rust sample.
-
-`linkWindowsOpenGL()` adds GLAD/WGL support and opengl32/gdi32/user32 linkage.
-Needed to produce runnable sample hosts and their native dependencies, not just a
-standalone Ghostty library. This file also describes non-Windows support but the
-recent verification was Windows; it should not be read as cross-platform test evidence.
-
-Sets GHOSTTY_LIB_DIR to the selected install prefix for the host build; build.rs
-uses it rather than always linking zig-out/lib. Needed to link the same native
-library that was just built when validating or installing to another prefix.
+Defines host-lib, which installs the embedding library (plus its Windows import
+library), the static VT library, and resources for external hosts such as nterm,
+which builds its Rust host with cargo against this install. On Windows it
+invokes dist/windows/conpty.ps1 for the pinned architecture-specific ConPTY
+runtime and adds the conpty target. The non-Windows path installs a public
+libghostty.so.
 
 ### src/build/WindowsResources.zig
 

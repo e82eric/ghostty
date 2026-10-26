@@ -1,4 +1,4 @@
-//! Graphics API for hosts that render with wgpu (the egui sample). Every GPU
+//! Graphics API for hosts that render with wgpu (nterm). Every GPU
 //! operation is forwarded through a dispatch table to the host, which
 //! executes it on the same wgpu device and queue it uses for its own UI, so
 //! finished frames are host textures and nothing is shared across devices or

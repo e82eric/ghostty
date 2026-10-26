@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) !void {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");
             }
-            try @import("src/build/EmbeddedSamples.zig").add(b, &config, lib_shared, libghostty_vt_static, resources);
+            try @import("src/build/HostLibrary.zig").add(b, &config, lib_shared, libghostty_vt_static, resources);
         }
     }
 

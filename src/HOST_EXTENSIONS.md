@@ -19,7 +19,7 @@ the smaller integration hooks in existing Ghostty files.
 | `c_api_host.zig` | Host initialization, argument quoting, and error accessors | C initialization wrapper and export import |
 | `config/c_api_host.zig` | Theme and font overrides, theme-directory enumeration | Config C API export import |
 | `config/c_get_host.zig` | Extra configuration value conversions | Config getter hooks |
-| `build/EmbeddedSamples.zig` | Native sample builds and ConPTY installation | Build entry point |
+| `build/HostLibrary.zig` | `host-lib` install for external hosts and ConPTY installation | Build entry point |
 | `build/WindowsResources.zig` | Compile terminfo with Git/MSYS ncurses tools | Resource build hook |
 
 `terminal/SnapshotLogicalPosition.zig` resolves logical line/UTF-8 offsets to
