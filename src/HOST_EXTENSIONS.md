@@ -8,9 +8,8 @@ the smaller integration hooks in existing Ghostty files.
 | `apprt/embedded_snapshot.zig` | Snapshot, style export, navigation, search-reader, and decoration C APIs | `embedded.zig` imports the exports |
 | `apprt/embedded_host.zig` | Host frame/font export, live cursor reads, shell identity, and USB key input | `embedded.zig` imports the exports |
 | `surface/Snapshot.zig` | Snapshot ownership, generation, caches, entry/exit, and scrolling | One state field plus destruction and scroll hooks in `Surface.zig` |
-| `terminal/SnapshotReflow.zig` | Reflow a frozen terminal and return an owned translation map | Snapshot C API |
+| `terminal/SnapshotReflow.zig` | Reflow a frozen terminal, carrying caller positions on upstream tracked pins | Snapshot C API |
 | `terminal/SnapshotStyleRuns.zig` | Resolved, coalesced style runs captured once for Rust document previews | Snapshot style-run C API |
-| `terminal/ReflowMap.zig` | Sorted cell segments and per-source-row offset index | `PageList.zig` records cell movement during reflow; Rust performs indexed lookups |
 | `renderer/SnapshotDecorations.zig` | Owned decoration message payload | One renderer message variant |
 | `renderer/SnapshotOverrides.zig` | Overlay that patches decoration colors and replacement text into the render state; caret shader uniforms | Renderer lifecycle, `prepare`/`apply` around the render state update, and caret uniforms |
 | `renderer/Wgpu.zig` | Graphics API that forwards GPU operations to the host's wgpu device and exports frames as host textures | `renderer.zig` backend selection and the `wgpu` platform |

@@ -2119,7 +2119,6 @@ pub inline fn blankCell(self: *const Screen) Cell {
 }
 
 pub const Resize = struct {
-    reflow_map: ?*@import("ReflowMap.zig") = null,
     /// The new size to resize to
     cols: size.CellCountInt,
     rows: size.CellCountInt,
@@ -2237,7 +2236,6 @@ pub inline fn resize(
             .pin = self.cursor.page_pin,
         },
         .pull_scrollback = opts.pull_scrollback,
-        .reflow_map = opts.reflow_map,
     });
 
     // No more failures are possible after this. Enforced by compiler

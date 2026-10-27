@@ -97,8 +97,7 @@ test "snapshot logical range survives repeated Unicode reflow" {
     try testing.expectEqual(@as(u64, 3), position.byte);
     const last = try fromCell(testing.allocator, &t, .{ .x = 2, .y = 3 });
     for ([_]u16{ 4, 5, 20, 7, 12 }) |cols| {
-        var map = try terminal.SnapshotReflow.resizeMapped(testing.allocator, &t, cols, 4);
-        map.deinit();
+        try terminal.SnapshotReflow.resize(testing.allocator, &t, cols, 4, &.{});
         const resolved = try resolve(testing.allocator, &t, .{ .start = position, .end = last });
         const pin = t.screens.active.pages.pin(.{ .screen = .{ .x = @intCast(resolved.start.x), .y = @intCast(resolved.start.y) } }).?;
         try testing.expectEqual(@as(u21, '界'), pin.node.page().getCells(pin.node.page().getRow(pin.y))[resolved.start.x].codepoint());
@@ -116,8 +115,7 @@ test "snapshot logical range resolves through 70000 history rows" {
     defer stream.deinit();
     for (0..70000) |_| stream.nextSlice("item\r\n");
     const range: Range = .{ .start = .{ .line = 69999, .byte = 1 }, .end = .{ .line = 69999, .byte = 3 } };
-    var map = try terminal.SnapshotReflow.resizeMapped(testing.allocator, &t, 3, 2);
-    map.deinit();
+    try terminal.SnapshotReflow.resize(testing.allocator, &t, 3, 2, &.{});
     const resolved = try resolve(testing.allocator, &t, range);
     try testing.expectEqualDeep(range.start, try fromCell(testing.allocator, &t, resolved.start));
     try testing.expectEqualDeep(range.end, try fromCell(testing.allocator, &t, resolved.end));

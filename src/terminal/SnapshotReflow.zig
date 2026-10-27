@@ -1,34 +1,37 @@
-//! Reflow a frozen terminal in place and return an owned indexed translation map.
+//! Reflow a frozen terminal in place, carrying caller positions with it.
 const std = @import("std");
 const Terminal = @import("Terminal.zig");
+const Pin = @import("PageList.zig").Pin;
 
 pub const Cell = extern struct { x: u32, y: u64 };
 
-pub const Map = @import("ReflowMap.zig");
-
-pub fn resizeMapped(alloc: std.mem.Allocator, t: *Terminal, cols: u16, rows: u16) !Map {
+/// Reflow the frozen terminal to the given grid and translate each position
+/// in place. Positions ride upstream tracked pins through the reflow, so the
+/// pin set grows only by the caller's handful of positions for its duration.
+pub fn resize(alloc: std.mem.Allocator, t: *Terminal, cols: u16, rows: u16, positions: []Cell) !void {
     if (cols == 0 or rows == 0) return error.InvalidSize;
     const screen = t.screens.active;
     const pages = &screen.pages;
-    var map = try Map.init(alloc, pages.total_rows, t.cols, cols);
-    errdefer map.deinit();
-    var tabstops = try @import("Tabstops.zig").init(alloc, cols, 8);
-    defer tabstops.deinit(alloc);
-    // Only the viewport needs an upstream tracked pin. Rust positions and
-    // preview anchors use the map and never enlarge the tracked pin set.
+    for (positions) |cell| {
+        if (cell.x >= t.cols or cell.y >= pages.total_rows) return error.InvalidPosition;
+    }
+    if (t.cols == cols and t.rows == rows) return;
+    const pins = try alloc.alloc(*Pin, positions.len);
+    defer alloc.free(pins);
+    var tracked: usize = 0;
+    defer for (pins[0..tracked]) |p| pages.untrackPin(p);
+    for (positions) |cell| {
+        const p = pages.pin(.{ .screen = .{ .x = @intCast(cell.x), .y = @intCast(cell.y) } }) orelse
+            return error.InvalidPosition;
+        pins[tracked] = try pages.trackPin(p);
+        tracked += 1;
+    }
     const top_pin = try pages.trackPin(pages.getTopLeft(.viewport));
     defer pages.untrackPin(top_pin);
     pages.setMaxBytes(null);
     pages.setMaxLines(null);
     screen.no_scrollback = false;
-    if (t.cols == cols) {
-        for (0..pages.total_rows) |y| {
-            map.beginRow(y);
-            try map.record(0, y, 0, cols, 1);
-            map.endRow();
-        }
-    }
-    try screen.resize(.{ .cols = cols, .rows = rows, .reflow = true, .pull_scrollback = true, .reflow_map = &map });
+    try screen.resize(.{ .cols = cols, .rows = rows, .reflow = true, .pull_scrollback = true });
     // A frozen snapshot can be captured again for a fresh picker preview.
     // Keep all terminal-wide dimensions consistent with the reflowed screen,
     // just as Terminal.resize does for the live terminal.
@@ -38,31 +41,20 @@ pub fn resizeMapped(alloc: std.mem.Allocator, t: *Terminal, cols: u16, rows: u16
         if (other == screen) continue;
         try other.resize(.{ .cols = cols, .rows = rows, .reflow = false });
     }
+    var tabstops = try @import("Tabstops.zig").init(alloc, cols, 8);
+    defer tabstops.deinit(alloc);
     std.mem.swap(@import("Tabstops.zig"), &t.tabstops, &tabstops);
     t.cols = cols;
     t.rows = rows;
     t.scrolling_region = .{ .top = 0, .bottom = rows - 1, .left = 0, .right = cols - 1 };
-    try map.finish(pages.total_rows);
+    for (positions, pins) |*cell, p| {
+        const point = pages.pointFromPin(.screen, p.*) orelse return error.InvalidPosition;
+        cell.* = .{ .x = point.screen.x, .y = point.screen.y };
+    }
     const top = pages.pointFromPin(.screen, top_pin.*).?.screen.y;
     screen.scroll(.{ .row = @min(top, pages.total_rows -| rows) });
     t.flags.dirty.clear = true;
-    return map;
 }
-
-pub fn resize(alloc: std.mem.Allocator, t: *Terminal, cols: u16, rows: u16, positions: []Cell) !void {
-    if (cols == 0 or rows == 0) return error.InvalidSize;
-    for (positions) |cell| {
-        if (cell.x >= t.cols or cell.y >= t.screens.active.pages.total_rows) return error.InvalidPosition;
-    }
-    if (t.cols == cols and t.rows == rows) return;
-    var map = try resizeMapped(alloc, t, cols, rows);
-    defer map.deinit();
-    for (positions) |*cell| {
-        const translated = map.translate(.{ .x = cell.x, .y = cell.y }) orelse return error.InvalidPosition;
-        cell.* = .{ .x = translated.x, .y = translated.y };
-    }
-}
-
 test "snapshot reflow allows fresh preview capture after resize" {
     const testing = std.testing;
     var t = try Terminal.init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
@@ -71,8 +63,8 @@ test "snapshot reflow allows fresh preview capture after resize" {
     defer stream.deinit();
     stream.nextSlice("preview content\r\nnext line\x1b[?1049h alternate\x1b[?1049l");
     for ([_][2]u16{ .{ 40, 12 }, .{ 120, 30 }, .{ 120, 10 } }) |grid| {
-        var map = try resizeMapped(testing.allocator, &t, grid[0], grid[1]);
-        map.deinit();
+        var none = [_]Cell{};
+        try resize(testing.allocator, &t, grid[0], grid[1], &none);
         var preview = try @import("PresentationSnapshot.zig").capture(testing.allocator, testing.io, &t);
         defer preview.deinit(testing.allocator);
         try testing.expectEqual(grid[0], preview.cols);
@@ -170,7 +162,7 @@ fn selectionText(alloc: std.mem.Allocator, t: *Terminal, a: Cell, b: Cell) ![:0]
 
 const MappedText = struct {
     text: std.ArrayList(u8) = .empty,
-    cells: std.ArrayList(Map.Cell) = .empty,
+    cells: std.ArrayList(Cell) = .empty,
 
     fn deinit(self: *MappedText) void {
         self.text.deinit(std.testing.allocator);
@@ -193,47 +185,56 @@ fn readMappedText(t: *Terminal) !MappedText {
     return result;
 }
 
-test "snapshot reflow map translates every text byte across Unicode and page boundaries" {
+test "snapshot reflow translates text bytes and blank cells across Unicode and page boundaries" {
     const testing = std.testing;
     var t = try Terminal.init(testing.io, testing.allocator, .{ .cols = 13, .rows = 7, .max_scrollback_bytes = null });
     defer t.deinit(testing.allocator);
     var stream = t.vtStream();
     defer stream.deinit();
     for (0..700) |_| stream.nextSlice("\x1b[31mab界e\u{301}XYZ界0123456789\x1b[0m\r\n\r\n");
+    var positions: std.ArrayList(Cell) = .empty;
+    defer positions.deinit(testing.allocator);
     for ([_][2]u16{ .{ 4, 11 }, .{ 31, 5 }, .{ 7, 24 }, .{ 7, 3 }, .{ 13, 7 } }) |grid| {
         var before = try readMappedText(&t);
         defer before.deinit();
+        // Sample text bytes (every tracked pin is scanned per reflowed cell),
+        // plus every cell of some rows, including blanks and wide spacers.
+        positions.clearRetainingCapacity();
+        var sampled: std.ArrayList(usize) = .empty;
+        defer sampled.deinit(testing.allocator);
+        for (before.text.items, before.cells.items, 0..) |byte, cell, i| {
+            if (byte == '\n' or i % 7 != 0) continue;
+            try sampled.append(testing.allocator, i);
+            try positions.append(testing.allocator, cell);
+        }
+        const text_positions = positions.items.len;
+        const old_rows = t.screens.active.pages.total_rows;
+        var row: u64 = 0;
+        while (row < old_rows) : (row += 97) {
+            for (0..t.cols) |x| try positions.append(testing.allocator, .{ .x = @intCast(x), .y = row });
+        }
         const pins = t.screens.active.pages.tracked_pins.count();
-        var map = try resizeMapped(testing.allocator, &t, grid[0], grid[1]);
-        defer map.deinit();
+        try resize(testing.allocator, &t, grid[0], grid[1], positions.items);
         var after = try readMappedText(&t);
         defer after.deinit();
         try testing.expectEqualStrings(before.text.items, after.text.items);
-        for (before.text.items, before.cells.items, after.cells.items) |byte, old, actual| {
-            if (byte == '\n') continue;
-            try testing.expectEqual(actual, map.translate(old).?);
+        for (sampled.items, positions.items[0..text_positions]) |i, actual| {
+            try testing.expectEqual(after.cells.items[i], actual);
         }
-        // Every original cell has a valid indexed translation, including
-        // blank rows and wide-character spacers not emitted by the formatter.
-        for (0..map.row_offsets.len - 1) |row| {
-            try testing.expect(map.row_offsets[row] <= map.row_offsets[row + 1]);
-            for (0..map.old_columns) |column| {
-                const cell = map.translate(.{ .x = @intCast(column), .y = row }).?;
-                try testing.expect(cell.x < map.new_columns and cell.y < map.new_rows);
-            }
+        const new_rows = t.screens.active.pages.total_rows;
+        for (positions.items[text_positions..]) |cell| {
+            try testing.expect(cell.x < grid[0] and cell.y < new_rows);
         }
         try testing.expectEqual(pins, t.screens.active.pages.tracked_pins.count());
     }
 }
 
-test "snapshot reflow map survives subsequent resize and maps trimmed blank rows" {
+test "snapshot reflow survives subsequent resize from trimmed blank rows" {
     var t = try Terminal.init(std.testing.io, std.testing.allocator, .{ .cols = 8, .rows = 20 });
     defer t.deinit(std.testing.allocator);
-    var map = try resizeMapped(std.testing.allocator, &t, 4, 2);
-    defer map.deinit();
-    const translated = map.translate(.{ .x = 7, .y = 19 }).?;
-    var next = try resizeMapped(std.testing.allocator, &t, 12, 3);
-    defer next.deinit();
-    try std.testing.expectEqual(translated, map.translate(.{ .x = 7, .y = 19 }).?);
-    try std.testing.expect(translated.x < 4 and translated.y < map.new_rows);
+    var cells = [_]Cell{.{ .x = 7, .y = 19 }};
+    try resize(std.testing.allocator, &t, 4, 2, &cells);
+    try std.testing.expect(cells[0].x < 4 and cells[0].y < t.screens.active.pages.total_rows);
+    try resize(std.testing.allocator, &t, 12, 3, &cells);
+    try std.testing.expect(cells[0].x < 12 and cells[0].y < t.screens.active.pages.total_rows);
 }

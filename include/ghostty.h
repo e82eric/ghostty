@@ -1414,30 +1414,11 @@ typedef struct { ghostty_snapshot_logical_position_s start, end; } ghostty_snaps
 typedef struct { ghostty_snapshot_cell_s start, end; } ghostty_snapshot_resolved_range_s;
 GHOSTTY_API bool ghostty_surface_snapshot_logical_position(ghostty_surface_t, uint64_t, ghostty_snapshot_cell_s, ghostty_snapshot_logical_position_s*);
 GHOSTTY_API bool ghostty_surface_snapshot_resolve_logical_range(ghostty_surface_t, uint64_t, ghostty_snapshot_logical_range_s, ghostty_snapshot_resolved_range_s*);
-/** Sorted old-row/column -> new-row/column translation runs.
- * step is 1 for contiguous cells and 0 for collapsed padding. */
-typedef struct {
-    uint64_t old_row, new_row;
-    uint32_t old_column, new_column, count, step;
-} ghostty_snapshot_reflow_segment_s;
-/** Owned, immutable map for one resize. row_offsets has old_rows + 1 entries;
- * the segments for row r are [row_offsets[r], row_offsets[r+1]).
- * Cell columns are zero based; segments use half-open source intervals.
- * Buffers remain valid independently of subsequent resizes until map_free.
- * Maps describe the frozen snapshot, never live terminal output. */
-typedef struct {
-    void* handle;
-    const ghostty_snapshot_reflow_segment_s* segments;
-    size_t segment_count;
-    const uint32_t* row_offsets;
-    uint64_t old_rows, new_rows;
-    uint32_t old_columns, new_columns;
-} ghostty_snapshot_reflow_map_s;
-/** Stop snapshot readers before reflow, translate retained positions with the
- * returned map, then republish decorations. On failure result is empty. */
+/** Reflow the frozen snapshot to the surface size. Stop snapshot readers
+ * first, pass every retained cell (translated in place), then republish
+ * decorations. On failure the cells are unchanged. */
 GHOSTTY_API bool ghostty_surface_snapshot_resize(
-    ghostty_surface_t, uint64_t generation, ghostty_snapshot_reflow_map_s*);
-GHOSTTY_API void ghostty_snapshot_reflow_map_free(ghostty_snapshot_reflow_map_s*);
+    ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_s* cells, size_t count);
 typedef struct {
     ghostty_snapshot_cell_s cursor;
     uint64_t viewport_top;

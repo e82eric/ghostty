@@ -10,8 +10,8 @@ already tracked on this branch. Diff line numbers describe this review only.
 
 The pane uses one frozen Ghostty terminal, reflowed in place. A preview owns
 an independent terminal and source-row anchors. Rust owns modal controllers
-and translates retained positions through the indexed map returned by the resize
-handshake. A separate immutable document remains a proposed alternative.
+and passes its retained positions to the resize call, which carries them
+through the reflow on upstream tracked pins. A separate immutable document remains a proposed alternative.
 
 ## Part I: changes inside existing upstream files
 
@@ -1812,241 +1812,6 @@ handshake. A separate immutable document remains a proposed alternative.
 
 **How it works:** Calls exportFrame; its result is still submitted through the existing completed-frame queue.
 
-### src/terminal/PageList.zig
-
-#### Chunk 1: Import the isolated map recorder
-
-```diff
-@@ -2,6 +2,7 @@
- //! and provides higher level operations on top of those pages to
- //! make it slightly easier to work with.
- const PageList = @This();
-+const ReflowMap = @import("ReflowMap.zig");
- 
- const std = @import("std");
- const builtin = @import("builtin");
-```
-
-**Why it is needed:** Needed to record translations without putting the map representation in upstream code.
-
-**How it works:** Imports ReflowMap, which owns sorted segments and row offsets.
-
-#### Chunk 2: Accept an optional resize recorder
-
-```diff
-@@ -1222,6 +1223,8 @@ pub fn clone(
- 
- /// Resize options
- pub const Resize = struct {
-+    /// Optional frozen-snapshot translation recorder; live resizes leave null.
-+    reflow_map: ?*ReflowMap = null,
-     /// The new cols/cells of the screen.
-     cols: ?size.CellCountInt = null,
-     rows: ?size.CellCountInt = null,
-```
-
-**Why it is needed:** Needed to enable map generation only for frozen snapshots.
-
-**How it works:** Adds a nullable recorder to Resize; ordinary live resize callers retain null and allocate no map.
-
-#### Chunk 3: Index each original source row during reflow
-
-```diff
-@@ -1478,13 +1481,25 @@ fn resizeCols(
-     // Reflow all our rows.
-     {
-         var reflow_cursor: ReflowCursor = .init(first_rewritten_node);
-+        var source_row: usize = 0;
-         while (it.next()) |row| {
-+            // Growing height before shrinking width can append source rows.
-+            // They did not exist in the layout being translated.
-+            const row_map = if (opts.reflow_map) |map|
-+                if (source_row < map.row_offsets.len - 1) map else null
-+            else
-+                null;
-+            if (row_map) |map| map.beginRow(source_row);
-             try reflow_cursor.reflowRow(
-                 self,
-                 row,
-                 if (preserved_cursor) |c| c.tracked_pin else null,
-+                row_map,
-             );
- 
-+            if (row_map) |map| map.endRow();
-+            source_row += 1;
-+
-             // Once we're done reflowing a page, we're done with it, so
-             // make it available for reuse (or destroy it). Making it
-             // immediately available frees memory and makes it more
-```
-
-**Why it is needed:** Needed to group segments by old row and exclude rows appended during height growth.
-
-**How it works:** Tracks source_row, brackets each original row with beginRow/endRow, and passes its recorder to reflowRow. New source rows beyond the old map size are reflowed normally without recording.
-
-#### Chunk 4: Pass the recorder into cell movement
-
-```diff
-@@ -1656,6 +1671,7 @@ const ReflowCursor = struct {
-         list: *PageList,
-         row: Pin,
-         cursor_pin: ?*Pin,
-+        reflow_map: ?*ReflowMap,
-     ) Allocator.Error!void {
-         const src_page: *Page = row.node.page();
-         const src_row = row.rowAndCell().row;
-```
-
-**Why it is needed:** Needed to observe Ghostty's actual wrapping instead of reimplementing wrapping in Rust.
-
-**How it works:** Adds an optional parameter to reflowRow; existing tracked-pin behavior is unchanged.
-
-#### Chunk 5: Record deferred blank rows
-
-```diff
-@@ -1720,6 +1736,7 @@ const ReflowCursor = struct {
-         // Defer processing of blank rows so that blank rows
-         // at the end of the page list are never written.
-         if (cols_len == 0) {
-+            if (reflow_map) |map| try map.record(0, self.total_rows - 1 + self.new_rows, 0, cells.len, 0);
-             // If this blank row was a wrap continuation somehow
-             // then we won't need to write it since it should be
-             // a part of the previously written row.
-```
-
-**Why it is needed:** Needed to translate old blank cells even when upstream defers or drops their physical rows.
-
-**How it works:** Records a constant-column segment at the pending destination row; finalization clamps dropped trailing rows into the retained screen.
-
-#### Chunk 6: Record bulk-copied runs
-
-```diff
-@@ -1772,7 +1789,10 @@ const ReflowCursor = struct {
-                 );
-                 const window = cells[x..][0..max_run];
-                 const run = bulkRunLength(window);
-+                const destination_row = self.total_rows - 1;
-+                const destination_column = self.x;
-                 if (run > 0 and self.copyRun(window[0..run], src_page)) {
-+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, run, 1);
-                     x += run;
-                     continue;
-                 }
-```
-
-**Why it is needed:** Needed to preserve the fast copy path while producing a compact map.
-
-**How it works:** Captures the absolute destination row/column before copyRun and records the successful run as step-one contiguous cells.
-
-#### Chunk 7: Record slow-path cells and skipped spacers
-
-```diff
-@@ -1792,17 +1812,23 @@ const ReflowCursor = struct {
-                 }
-             }
- 
-+            const destination_row = self.total_rows - 1;
-+            const destination_column = self.x;
-             if (self.writeCell(
-                 list,
-                 &cells[x],
-                 src_page,
-             )) |result| switch (result) {
-                 // Wrote the cell, move to the next.
--                .success => x += 1,
-+                .success => {
-+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, 1, 1);
-+                    x += 1;
-+                },
- 
-                 // Wrote the cell but request to skip the next so skip it.
-                 // This is used for things like spacers.
-                 .skip_next => {
-+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, @min(2, cells.len - x), 0);
-                     // Remap any tracked pins at the skipped position (x+1)
-                     // since we won't process that cell in the loop.
-                     if (row_has_pins) for (list.tracked_pins.keys()) |p| {
-```
-
-**Why it is needed:** Needed for graphemes, wide-cell padding, and other cells outside bulk copying.
-
-**How it works:** Records only successful writes, maps skipped source pairs as constant-column segments, and emits nothing for repeat until the wide character is actually placed. Absolute row coordinates survive destination page moves.
-
-#### Chunk 8: Record upstream fallback cell consumption
-
-```diff
-@@ -1833,6 +1859,7 @@ const ReflowCursor = struct {
-                     // any further, so we just ignore bad cells and take
-                     // corrupted (but valid) cell contents.
-                     log.warn("reflowRow OutOfSpace on first row, discarding cell managed memory", .{});
-+                    if (reflow_map) |map| try map.record(x, destination_row, destination_column, 1, 1);
-                     x += 1;
-                     self.cursorForward();
-                 } else {
-```
-
-**Why it is needed:** Needed so the map still covers source cells consumed by the existing first-row OutOfSpace fallback.
-
-**How it works:** Records the destination when upstream discards managed cell data and advances. It does not change that fallback policy.
-
-#### Chunk 9: Map trimmed right-side padding
-
-```diff
-@@ -1845,6 +1872,12 @@ const ReflowCursor = struct {
-             }
-         }
- 
-+        if (reflow_map) |map| {
-+            const last = map.segments.items[map.segments.items.len - 1];
-+            const last_column = last.new_column + (last.count - 1) * last.step;
-+            try map.record(x, last.new_row, last_column, cells.len - x, 0);
-+        }
-+
-         // If the source row isn't wrapped then we should scroll afterwards.
-         if (!src_row.wrap) {
-             self.new_rows += 1;
-```
-
-**Why it is needed:** Needed for selections and anchors whose old columns lay beyond meaningful text.
-
-**How it works:** Maps the remaining old columns onto the last emitted destination cell with step zero, rather than adding tracked pins that force extra padding to be retained.
-
-### src/terminal/Screen.zig
-
-#### Chunk 1: Expose the optional recorder on screen resize
-
-```diff
-@@ -1998,6 +1998,7 @@ pub inline fn blankCell(self: *const Screen) Cell {
- }
- 
- pub const Resize = struct {
-+    reflow_map: ?*@import("ReflowMap.zig") = null,
-     /// The new size to resize to
-     cols: size.CellCountInt,
-     rows: size.CellCountInt,
-```
-
-**Why it is needed:** Needed for SnapshotReflow to request a map through Screen's existing resize entry point.
-
-**How it works:** Adds a nullable ReflowMap pointer with a null default, leaving live callers unchanged.
-
-#### Chunk 2: Forward the recorder to page reflow
-
-```diff
-@@ -2115,6 +2116,7 @@ pub inline fn resize(
-             .pin = self.cursor.page_pin,
-         },
-         .pull_scrollback = opts.pull_scrollback,
-+        .reflow_map = opts.reflow_map,
-     });
- 
-     // No more failures are possible after this. Enforced by compiler
-```
-
-**Why it is needed:** Needed because actual row/cell movement occurs inside PageList.
-
-**How it works:** Passes the optional pointer through with the existing cursor and scrollback options; Screen continues owning cursor/style/image resize coordination.
-
 ### src/terminal/Terminal.zig
 
 #### Chunk 1: Include extracted resize regressions
@@ -2638,14 +2403,14 @@ Keeping these exports here avoids a growing implementation block in embedded.zig
 
 ### src/apprt/embedded_snapshot.zig
 
-**Public API / types:** `ghostty_surface_snapshot_logical_position`, `ghostty_surface_snapshot_resolve_logical_range`, `ghostty_surface_snapshot_resize`, `ghostty_snapshot_reflow_map_free`, `ghostty_surface_snapshot_view`, `ghostty_surface_snapshot_selection_text`, `ghostty_surface_snapshot_selection_text_free`, `ghostty_surface_snapshot_apply_decorations`, `ghostty_surface_snapshot_text_cursor_new`, `ghostty_surface_snapshot_text_cursor_free`, `ghostty_surface_snapshot_text_cursor_reset`, `ghostty_surface_snapshot_text_cursor_next`, `ghostty_surface_snapshot_row`, `ghostty_surface_snapshot_row_free`, `ghostty_surface_snapshot_begin`, `ghostty_surface_snapshot_end`.
+**Public API / types:** `ghostty_surface_snapshot_logical_position`, `ghostty_surface_snapshot_resolve_logical_range`, `ghostty_surface_snapshot_resize`, `ghostty_surface_snapshot_view`, `ghostty_surface_snapshot_selection_text`, `ghostty_surface_snapshot_selection_text_free`, `ghostty_surface_snapshot_apply_decorations`, `ghostty_surface_snapshot_text_cursor_new`, `ghostty_surface_snapshot_text_cursor_free`, `ghostty_surface_snapshot_text_cursor_reset`, `ghostty_surface_snapshot_text_cursor_next`, `ghostty_surface_snapshot_row`, `ghostty_surface_snapshot_row_free`, `ghostty_surface_snapshot_begin`, `ghostty_surface_snapshot_end`.
 
 This standalone file contains the custom snapshot types and exports previously
 added inline to embedded.zig. Its responsibilities are:
 
 - **begin/end:** enter and leave modal capture and expose the generation.
 - **resize:** validate generation, serialize access, clear old layout decorations
-  and row caches, reflow the frozen terminal, and return an owned indexed translation map.
+  and row caches, and reflow the frozen terminal, translating the caller's cells in place.
 - **view:** return cursor, viewport, total rows, and column count for Rust navigation.
   Rust compares the viewport with the one its decorations cover to know when to
   republish them.
@@ -2670,8 +2435,8 @@ added inline to embedded.zig. Its responsibilities are:
 Needed to bridge Rust's modal controllers to Ghostty's cells and renderer without
 placing all those exports inside upstream embedded.zig. Locking, generation
 validation, allocation cleanup, and custom error reporting belong at this boundary.
-Rust translates retained cells locally and frees the map on drop. The added
-map-free export owns both arrays independently of terminal lifetime. Associated
+Rust passes its retained cells in one array, so no map or extra free export
+crosses the boundary. Associated
 helper tests remain beside the implementation.
 
 ### src/apprt/snapshot_viewport.zig
@@ -2835,22 +2600,6 @@ copy implementation. Tests cover independent contents, history/viewport retentio
 and allocation-failure cleanup. The serialized buffer is temporary, not retained
 as a second pane document.
 
-### src/terminal/ReflowMap.zig
-
-**Public API / types:** `Cell`, `Segment`, `init`, `deinit`, `beginRow`, `record`, `endRow`, `finish`, `translate`.
-
-`init` owns the old-row offset array and segment builder. PageList calls beginRow,
-record, and endRow while moving cells; record merges compatible adjacent runs.
-finish fills height-trimmed rows and clamps deferred trailing blanks. Segments
-are sorted by source row/column and are 32 bytes each; step 1 represents a
-contiguous run, step 0 collapsed blanks/padding. translate indexes row_offsets
-and binary-searches that row's segments. deinit releases both owned buffers.
-
-SnapshotReflow returns this object for pane resizes. Rust receives its
-immutable arrays through the C API and performs the same local lookup. The map
-has no pointers into terminal pages and survives later resizes until released.
-See [the map design](src/terminal/REFLOW_MAP.md) for ownership and memory costs.
-
 ### src/terminal/SnapshotStyleRuns.zig
 
 **Public API / types:** `Run`, `capture`.
@@ -2886,25 +2635,25 @@ map. Tests cover repeated Unicode reflow, wide wrap padding, and invalid lines.
 
 ### src/terminal/SnapshotReflow.zig
 
-**Public API / types:** `Cell`, `Map`, `resizeMapped`, `resize`.
+**Public API / types:** `Cell`, `resize`.
 
-resizeMapped creates a recorder for the old layout, reflows the frozen pane terminal
-through Screen, and returns the owned finalized map. Height-only resizing emits
-identity segments before clamping trimmed rows. Only the viewport top needs a
-temporary tracked pin. History limits are removed for the frozen terminal so
-source text is not pruned during resizing.
+resize validates the caller's cells, registers an upstream tracked pin for each
+one (plus the viewport top), reflows the frozen pane terminal through Screen,
+and writes each pin's new screen position back in place before untracking them.
+Upstream reflow already remaps tracked pins, including pins in trailing blanks
+and on wide-character spacers, so PageList and Screen carry no snapshot hooks.
+Each tracked pin is scanned per reflowed cell on rows that hold pins, which is
+cheap for the handful of copy-mode positions Rust retains. History limits are
+removed for the frozen terminal so source text is not pruned during resizing.
 
 The helper also updates tab stops, resets the scrolling region, and resizes any
-inactive screen to keep terminal-wide dimensions consistent. Stale dimensions would make later snapshot validation reject it. A regression
-captures a fresh terminal after shrinking, growing, and height-only resizing
-with an existing alternate screen.
-
-The internal resize convenience function validates caller cells and translates
-them through the returned map; tests use it. Rust's pane calls resizeMapped
-through the snapshot C API and reuses its map directly. Snapshot readers must
-be stopped before resize. Tests compare every emitted UTF-8 byte against the
-new formatter mapping, cover every source cell, Unicode/page boundaries, trimmed
-blanks, unchanged width, map lifetime, repeated resize, and large histories.
+inactive screen to keep terminal-wide dimensions consistent. Stale dimensions
+would make later snapshot validation reject it. A regression captures a fresh
+terminal after shrinking, growing, and height-only resizing with an existing
+alternate screen. Snapshot readers must be stopped before resize. Tests compare
+sampled UTF-8 bytes against the new formatter mapping, cover whole rows of
+blanks and spacers, Unicode/page boundaries, trimmed blanks, repeated resize,
+and large histories, and check that no tracked pins are left behind.
 
 ### src/terminal/SnapshotTextCursor.zig
 
@@ -2959,28 +2708,26 @@ were moved into the separate helpers that use them. It may still appear modified
 relative to the local branch HEAD, which is a different comparison baseline.
 
 The older second pane snapshot, retained pane stable-row translation APIs, and
-layout revision mechanism were removed. The current pane uses a returned-map resize
-handshake. Preview source-row coordinate anchors remain because their independent layout
-requirements differ from the pane. They are translated through the map instead
-of registered as tracked pins. ReflowPins.zig and its index hooks are removed.
+layout revision mechanism were removed. The returned reflow map (ReflowMap.zig plus its
+PageList and Screen hooks) was replaced by tracked pins for the caller's few
+positions, so PageList.zig and Screen.zig match upstream. ReflowPins.zig and its
+index hooks are removed.
 
 ## Maintenance and validation
 
 For upstream updates, review structural integration points first: platform tags,
 renderer terminal selection and decoration drawing, OpenGL lifecycle/frame types,
-PageList reflow, IOCP wakeup ownership, Windows resize ordering, and DLL startup.
+IOCP wakeup ownership, Windows resize ordering, and DLL startup.
 Standalone helpers reduce the overlapping diff but do not eliminate those dependencies.
 
 Diagnostics and test imports do not implement product behavior. The incidental
 blank-line deletion is not required. Required behavior could move elsewhere only
 if the corresponding caller/ownership contract is preserved.
 
-Native build and the snapshot test filter passed after map integration. The
-resize filter passed 453 tests, the 70,000-row preview filter passed 75 tests
-(including unnamed module tests), and all 207 Rust host tests passed. The three
-copy resize tests were rerun after removing their obsolete deduplication helper.
-The earlier export-name comparison predates the map-free export; the current
-resize ABI has changed and native host/library clients must be rebuilt together.
+The host library build, the snapshot and PageList test filters, and the Rust
+host tests passed after replacing the reflow map with tracked pins. The resize
+ABI changed (cells in, translated in place), so native host and library clients
+must be rebuilt together.
 
 To refresh the inventory, compare both tracked changes and new files:
 

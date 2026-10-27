@@ -134,31 +134,14 @@ fn snapshotViewportAnchor(screen: *terminal.Screen) ?SnapshotAnchor {
     return .{ .pin = screen.pages.getTopLeft(.viewport), .row = rows.start };
 }
 
-// The map owns numeric coordinates, never terminal pages. Rust stops snapshot
-// readers before resize and uses this result to translate all retained cells.
-const ReflowMap = terminal.SnapshotReflow.Map;
-const SnapshotReflowMap = extern struct {
-    handle: ?*ReflowMap = null,
-    segments: ?[*]const ReflowMap.Segment = null,
-    segment_count: usize = 0,
-    row_offsets: ?[*]const u32 = null,
-    old_rows: u64 = 0,
-    new_rows: u64 = 0,
-    old_columns: u32 = 0,
-    new_columns: u32 = 0,
-};
-
-export fn ghostty_snapshot_reflow_map_free(result: *SnapshotReflowMap) void {
-    if (result.handle) |map| {
-        const alloc = map.alloc;
-        map.deinit();
-        alloc.destroy(map);
-    }
-    result.* = .{};
-}
-
-export fn ghostty_surface_snapshot_resize(surface: *Surface, generation: u64, result: *SnapshotReflowMap) bool {
-    result.* = .{};
+/// Reflow the frozen snapshot to the surface size. Rust stops snapshot
+/// readers first and passes every retained cell, which is translated in place.
+export fn ghostty_surface_snapshot_resize(
+    surface: *Surface,
+    generation: u64,
+    cells: ?[*]SnapshotCell,
+    count: usize,
+) bool {
     @import("../c_api_error.zig").clear();
     const core = &surface.core_surface;
     const state = &core.renderer_state;
@@ -166,10 +149,6 @@ export fn ghostty_surface_snapshot_resize(surface: *Surface, generation: u64, re
     defer state.mutex.unlock(global.io());
     if (core.snapshot.generation != generation) return false;
     const t = core.snapshot.terminal orelse return false;
-    const map = core.alloc.create(ReflowMap) catch |err| {
-        @import("../c_api_error.zig").set(err);
-        return false;
-    };
     const grid = core.size.grid();
     // Flattened decorations and row caches refer to the old pages.
     const arena = std.heap.ArenaAllocator.init(core.alloc);
@@ -177,20 +156,10 @@ export fn ghostty_surface_snapshot_resize(surface: *Surface, generation: u64, re
         .snapshot_decorations = .{ .arena = arena, .layers = &.{} },
     }, .{ .forever = {} });
     core.snapshot.text_row_anchor = null;
-    map.* = terminal.SnapshotReflow.resizeMapped(core.alloc, t, grid.columns, grid.rows) catch |err| {
-        core.alloc.destroy(map);
+    const positions: []SnapshotCell = if (cells) |c| c[0..count] else &.{};
+    terminal.SnapshotReflow.resize(core.alloc, t, grid.columns, grid.rows, positions) catch |err| {
         @import("../c_api_error.zig").set(err);
         return false;
-    };
-    result.* = .{
-        .handle = map,
-        .segments = map.segments.items.ptr,
-        .segment_count = map.segments.items.len,
-        .row_offsets = map.row_offsets.ptr,
-        .old_rows = map.row_offsets.len - 1,
-        .new_rows = map.new_rows,
-        .old_columns = map.old_columns,
-        .new_columns = map.new_columns,
     };
     core.renderer_thread.wakeup.notify() catch {};
     return true;
