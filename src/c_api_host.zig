@@ -41,10 +41,6 @@ pub fn windowsCommandLineFromUtf8Args(argc: usize, argv: [*][*:0]u8) ![]u16 {
 
 /// Trust UTF-8 arguments supplied by an embedding host on Windows.
 pub export fn ghostty_init_utf8(argc: usize, argv: [*][*:0]u8) c_int {
-    return init(argc, argv, true);
-}
-
-pub fn init(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
     @import("c_api_error.zig").clear();
     assert(builtin.link_libc);
 
@@ -59,18 +55,16 @@ pub fn init(argc: usize, argv: [*][*:0]u8, utf8_args: bool) c_int {
         // Anything that is not using PosixBlock is a global block for
         // purposes of initialization.
         .{ .block = .{ .use_global = true } };
-    const options: global.InitOpts = if (utf8_args) blk: {
-        const args: std.process.Args = if (builtin.os.tag == .windows)
-            .{ .vector = windowsCommandLineFromUtf8Args(argc, argv) catch |err| {
-                @import("c_api_error.zig").set(err);
-                std.log.err("failed to encode UTF-8 arguments error={}", .{err});
-                return 1;
-            } }
-        else
-            .{ .vector = argv[0..argc] };
-        break :blk .{ .c_utf8 = .{ .args = args, .environ = environ } };
-    } else .{ .c = .{ .argc = argc, .argv = argv, .environ = environ } };
-    global.init(options) catch |err| {
+    const args: std.process.Args = if (builtin.os.tag == .windows)
+        .{ .vector = windowsCommandLineFromUtf8Args(argc, argv) catch |err| {
+            @import("c_api_error.zig").set(err);
+            std.log.err("failed to encode UTF-8 arguments error={}", .{err});
+            return 1;
+        } }
+    else
+        .{ .vector = argv[0..argc] };
+    // Prepared arguments make this the same as an executable's startup.
+    global.init(.{ .main = .{ .args = args, .environ = environ } }) catch |err| {
         @import("c_api_error.zig").set(err);
         std.log.err("failed to initialize ghostty error={}", .{err});
         return 1;

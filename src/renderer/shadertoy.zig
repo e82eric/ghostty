@@ -151,11 +151,21 @@ pub fn loadFromFile(
 /// the built-in rather than a declared input.
 fn wgpuGlslFromShader(alloc: Allocator, writer: *std.Io.Writer, src: []const u8) !void {
     const prefix = @embedFile("shaders/shadertoy_prefix.glsl");
+    const sampler = "layout(binding = 0) uniform sampler2D iChannel0;";
+    const frag_coord = "layout(location = 0) in vec4 gl_FragCoord;";
+    // Fail at compile time, not with a confusing shader error, if upstream
+    // rewords either declaration this rewrites.
+    comptime {
+        @setEvalBranchQuota(100_000);
+        if (std.mem.indexOf(u8, prefix, sampler) == null or
+            std.mem.indexOf(u8, prefix, frag_coord) == null)
+            @compileError("shadertoy_prefix.glsl changed; update wgpuGlslFromShader");
+    }
     const separate = try std.mem.replaceOwned(
         u8,
         alloc,
         prefix,
-        "layout(binding = 0) uniform sampler2D iChannel0;",
+        sampler,
         \\layout(set = 0, binding = 0) uniform texture2D channel_texture;
         \\layout(set = 0, binding = 2) uniform sampler channel_sampler;
         \\#define iChannel0 sampler2D(channel_texture, channel_sampler)
@@ -165,7 +175,7 @@ fn wgpuGlslFromShader(alloc: Allocator, writer: *std.Io.Writer, src: []const u8)
         u8,
         alloc,
         separate,
-        "layout(location = 0) in vec4 gl_FragCoord;",
+        frag_coord,
         "",
     );
     try writer.writeAll(builtin_position);

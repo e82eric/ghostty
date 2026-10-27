@@ -111,7 +111,30 @@ pub const String = extern struct {
 
 /// Initialize ghostty global state.
 pub export fn ghostty_init(argc: usize, argv: [*][*:0]u8) c_int {
-    return @import("c_api_host.zig").init(argc, argv, false);
+    assert(builtin.link_libc);
+
+    global.init(.{
+        .c = .{
+            .argc = argc,
+            .argv = argv,
+            .environ = if (std.process.Environ.Block == std.process.Environ.PosixBlock)
+                // Asserting libc means that we can fast-path all POSIX blocks
+                .{ .block = .{ .slice = std.c.environ[0..env_len: {
+                    var len: usize = 0;
+                    while (std.c.environ[len]) |_| : (len += 1) {}
+                    break :env_len len;
+                } :null] } }
+            else
+                // Anything that is not using PosixBlock is a global block for
+                // purposes of initialization.
+                .{ .block = .{ .use_global = true } },
+        },
+    }) catch |err| {
+        std.log.err("failed to initialize ghostty error={}", .{err});
+        return 1;
+    };
+
+    return 0;
 }
 
 /// Runs an action if it is specified. If there is no action this returns
