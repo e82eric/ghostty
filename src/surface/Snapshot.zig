@@ -9,7 +9,6 @@ const log = std.log.scoped(.surface);
 pub const Viewport = struct { start: usize, end: usize };
 terminal: ?*terminalpkg.Terminal = null,
 generation: u64 = 0,
-decoration_viewport: ?Viewport = null,
 text_row_anchor: ?struct { pin: terminalpkg.PageList.Pin, row: u64 } = null,
 
 /// Capture an independently owned terminal while holding the terminal lock.
@@ -53,7 +52,6 @@ pub fn end(self: *Snapshot, surface: *Surface) void {
     surface.renderer_state.presentation_terminal = null;
     surface.renderer_state.terminal.flags.dirty.clear = true;
     self.terminal = null;
-    self.decoration_viewport = null;
     self.text_row_anchor = null;
     surface.renderer_state.mutex.unlock(global.io());
 

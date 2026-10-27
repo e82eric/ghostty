@@ -1361,51 +1361,51 @@ GHOSTTY_API bool ghostty_surface_snapshot_text_cursor_reset(ghostty_snapshot_tex
 GHOSTTY_API int ghostty_surface_snapshot_text_cursor_next(
     ghostty_snapshot_text_cursor_t, ghostty_snapshot_text_chunk_s*);
 
-/** One physical row of the frozen snapshot. Each UTF-8 byte has a matching
- * cell column; both buffers are owned by the caller until text_row_free.
- * A blank row may have zero bytes. Rows use screen coordinates.
- */
-typedef struct {
-    const char* text;
-    const uint32_t* columns;
-    uintptr_t len;
-    bool wraps_to_next;
-} ghostty_snapshot_text_row_s;
-GHOSTTY_API bool ghostty_surface_snapshot_text_row(
-    ghostty_surface_t, uint64_t generation, uint64_t row,
-    ghostty_snapshot_text_row_s*);
-GHOSTTY_API void ghostty_surface_snapshot_text_row_free(ghostty_snapshot_text_row_s*);
-
 /** Resolved style runs over source columns [start,end). UINT32_MAX colors
  * use preview defaults. Flags: bold=1 italic=2 strike=4 inverse=8 invisible=16
- * faint=32. Read during document loading; free with style_runs_free. */
+ * faint=32. */
 typedef struct {
     uint32_t start, end, foreground, background, underline_color;
     uint8_t flags, underline;
     uint16_t reserved;
 } ghostty_snapshot_style_run_s;
-typedef struct {
-    ghostty_snapshot_style_run_s* runs;
-    uintptr_t len;
-} ghostty_snapshot_style_runs_s;
-GHOSTTY_API bool ghostty_surface_snapshot_style_runs(ghostty_surface_t, uint64_t, uint64_t, ghostty_snapshot_style_runs_s*);
-GHOSTTY_API void ghostty_snapshot_style_runs_free(ghostty_snapshot_style_runs_s*);
 
-/** One physical row at the live terminal cursor. Text is owned by the caller. */
+/** One physical row of the frozen snapshot, in screen coordinates. Each UTF-8
+ * byte has a matching cell column; a blank row may have zero bytes. widths has
+ * cell_count entries: 2 for a wide character, 0 for the cell it covers, and 1
+ * otherwise. style_runs is NULL unless styles were requested. All buffers are
+ * owned by the caller until ghostty_surface_snapshot_row_free.
+ */
+typedef struct {
+    const char* text;
+    const uint32_t* columns;
+    uintptr_t len;
+    const uint8_t* widths;
+    uint32_t cell_count;
+    const ghostty_snapshot_style_run_s* style_runs;
+    uintptr_t style_run_count;
+    bool wraps_to_next;
+} ghostty_snapshot_row_s;
+GHOSTTY_API bool ghostty_surface_snapshot_row(
+    ghostty_surface_t, uint64_t generation, uint64_t row, bool styles,
+    ghostty_snapshot_row_s*);
+GHOSTTY_API void ghostty_surface_snapshot_row_free(ghostty_snapshot_row_s*);
+
+/** The live terminal cursor. column is its cell column. row is relative to the
+ * visible viewport and only meaningful when in_viewport is true. When line is
+ * requested, text holds the cursor's physical row and cursor_byte its offset;
+ * free it with ghostty_surface_live_cursor_free. */
 typedef struct {
     const char* text;
     uintptr_t len;
     uintptr_t cursor_byte;
-    uint32_t cursor_column;
-} ghostty_live_cursor_line_s;
-GHOSTTY_API bool ghostty_surface_live_cursor_line(
-    ghostty_surface_t, ghostty_live_cursor_line_s*);
-GHOSTTY_API void ghostty_surface_live_cursor_line_free(ghostty_live_cursor_line_s*);
-
-/** Cursor cell relative to the currently visible live viewport. */
-typedef struct { uint32_t column; uint32_t row; } ghostty_live_cursor_position_s;
-GHOSTTY_API bool ghostty_surface_live_cursor_position(
-    ghostty_surface_t, ghostty_live_cursor_position_s*);
+    uint32_t column;
+    uint32_t row;
+    bool in_viewport;
+} ghostty_live_cursor_s;
+GHOSTTY_API bool ghostty_surface_live_cursor(
+    ghostty_surface_t, bool line, ghostty_live_cursor_s*);
+GHOSTTY_API void ghostty_surface_live_cursor_free(ghostty_live_cursor_s*);
 
 typedef struct { uint32_t x; uint64_t y; } ghostty_snapshot_cell_s;
 /** Stable logical line and UTF-8 byte offset in plain snapshot text. */
@@ -1450,10 +1450,6 @@ typedef struct {
  * cursors and rebuild source payloads after reflow before using them again. */
 GHOSTTY_API bool ghostty_surface_snapshot_view(
     ghostty_surface_t, uint64_t generation, ghostty_snapshot_view_s*);
-/** Resolve a snapshot cell to its character head (or next cell when moving right). */
-GHOSTTY_API bool ghostty_surface_snapshot_resolve_cell(
-    ghostty_surface_t, uint64_t generation, ghostty_snapshot_cell_s requested,
-    bool snap_right, ghostty_snapshot_cell_s* resolved);
 typedef struct {
     ghostty_snapshot_cell_s start;
     ghostty_snapshot_cell_s end; /* inclusive */
@@ -1517,8 +1513,6 @@ GHOSTTY_API bool ghostty_surface_snapshot_apply_decorations(
     const ghostty_snapshot_decoration_layer_s*, uintptr_t layer_count,
     const ghostty_snapshot_cell_text_s*, uintptr_t text_count,
     const ghostty_snapshot_viewport_options_s* viewport);
-GHOSTTY_API bool ghostty_surface_snapshot_decorations_need_refresh(
-    ghostty_surface_t, uint64_t generation);
 
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);

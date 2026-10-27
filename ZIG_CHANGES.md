@@ -2618,15 +2618,15 @@ the callers, purpose, and ownership/lifetime of the provided operations.
 
 ### src/apprt/embedded_host.zig
 
-**Public API / types:** `ghostty_surface_take_gl_frame`, `ghostty_gl_frame_release`, `ghostty_surface_read_font`, `ghostty_font_data_free`, `ghostty_surface_live_cursor_position`, `ghostty_surface_live_cursor_line`, `ghostty_surface_live_cursor_line_free`, `ghostty_surface_shell_pid`, `ghostty_surface_shell_creation_time`, `ghostty_surface_key_usb`, `screenPointSpansScrollback`.
+**Public API / types:** `ghostty_surface_take_gl_frame`, `ghostty_gl_frame_release`, `ghostty_surface_read_font`, `ghostty_font_data_free`, `ghostty_surface_live_cursor`, `ghostty_surface_live_cursor_free`, `ghostty_surface_shell_pid`, `ghostty_surface_shell_creation_time`, `ghostty_surface_key_usb`, `screenPointSpansScrollback`.
 
 - **take_gl_frame/gl_frame_release:** obtain a texture frame lease and release it
   after composition. Needed to expose GPU output with explicit ownership.
 - **read_font/font_data_free:** provide configured font bytes/metadata for host UI
   rendering and cleanup. Needed for preview/UI typography to use terminal fonts.
-- **live_cursor_position/live_cursor_line/free:** read live cursor coordinates and
-  its logical-line text/mapping. Needed for host features that inspect live input
-  independently of modal snapshot presentation.
+- **live_cursor/free:** read the live cursor's column and viewport row and, when
+  requested, its physical row's text and byte offset. Needed for host features that
+  inspect live input independently of modal snapshot presentation.
 - **shell_pid/shell_creation_time:** expose original process identity for host-side
   process integration, including protection against confusing a reused PID.
 - **key_usb:** convert native USB key/modifier/text information into App.KeyEvent,
@@ -2638,7 +2638,7 @@ Keeping these exports here avoids a growing implementation block in embedded.zig
 
 ### src/apprt/embedded_snapshot.zig
 
-**Public API / types:** `ghostty_surface_snapshot_style_runs`, `ghostty_snapshot_style_runs_free`, `ghostty_surface_snapshot_resize`, `ghostty_snapshot_reflow_map_free`, `ghostty_surface_snapshot_view`, `ghostty_surface_snapshot_resolve_cell`, `ghostty_surface_snapshot_selection_text`, `ghostty_surface_snapshot_selection_text_free`, `ghostty_surface_snapshot_apply_decorations`, `ghostty_surface_snapshot_decorations_need_refresh`, `ghostty_surface_snapshot_text_cursor_new`, `ghostty_surface_snapshot_text_cursor_free`, `ghostty_surface_snapshot_text_cursor_reset`, `ghostty_surface_snapshot_text_cursor_next`, `ghostty_surface_snapshot_text_row`, `ghostty_surface_snapshot_text_row_free`, `ghostty_surface_snapshot_begin`, `ghostty_surface_snapshot_end`.
+**Public API / types:** `ghostty_surface_snapshot_logical_position`, `ghostty_surface_snapshot_resolve_logical_range`, `ghostty_surface_snapshot_resize`, `ghostty_snapshot_reflow_map_free`, `ghostty_surface_snapshot_view`, `ghostty_surface_snapshot_selection_text`, `ghostty_surface_snapshot_selection_text_free`, `ghostty_surface_snapshot_apply_decorations`, `ghostty_surface_snapshot_text_cursor_new`, `ghostty_surface_snapshot_text_cursor_free`, `ghostty_surface_snapshot_text_cursor_reset`, `ghostty_surface_snapshot_text_cursor_next`, `ghostty_surface_snapshot_row`, `ghostty_surface_snapshot_row_free`, `ghostty_surface_snapshot_begin`, `ghostty_surface_snapshot_end`.
 
 This standalone file contains the custom snapshot types and exports previously
 added inline to embedded.zig. Its responsibilities are:
@@ -2647,20 +2647,19 @@ added inline to embedded.zig. Its responsibilities are:
 - **resize:** validate generation, serialize access, clear old layout decorations
   and row caches, reflow the frozen terminal, and return an owned indexed translation map.
 - **view:** return cursor, viewport, total rows, and column count for Rust navigation.
-- **resolve_cell:** normalize requested cells, including wide-cell boundaries.
+  Rust compares the viewport with the one its decorations cover to know when to
+  republish them.
 - **selection_text/free:** use Ghostty selection formatting and define ownership
   of returned character, line, or rectangular selection text.
 - **apply_decorations:** validate and flatten visible ranges, optionally reveal a
   target with padding, and publish styled ranges and replacement text to rendering.
-- **decorations_need_refresh:** detect viewport changes that require Rust to
-  regenerate viewport-relative decoration data.
 - **text_cursor_new/reset/next/free:** expose the sequential history reader with
   generation checks and explicit ownership.
-- **text_row/free:** provide individual row text, mapping, and wrap information;
-  cache a nearby row anchor to make successive row reads cheaper.
-- **style_runs/free:** export resolved column-style runs once during source loading
-  and release their allocation. The helper lives in SnapshotStyleRuns.zig.
-  Rust stores text/style runs and handles wrapping, preview painting, and copy.
+- **row/free:** provide one row's text, byte-to-column mapping, per-cell widths, wrap
+  flag, and optionally its resolved column-style runs (SnapshotStyleRuns.zig); cache
+  a nearby row anchor to make successive row reads cheaper. Rust uses the widths to
+  move cells off the second half of wide characters, and stores text/style runs for
+  wrapping, preview painting, and copy.
 - **logical_position:** capture a windowed document's logical line and UTF-8
   origin once. The frozen content retains that origin across width changes.
 - **resolve_logical_range:** map logical endpoints to current cells on accept

@@ -104,34 +104,30 @@ export fn ghostty_font_data_free(result: *FontData) void {
     result.* = .{};
 }
 
-const LiveCursorLine = extern struct {
-    text: ?[*]const u8,
-    len: usize,
-    cursor_byte: usize,
-    cursor_column: u32,
+// ghostty_live_cursor_s
+const LiveCursor = extern struct {
+    text: ?[*]const u8 = null,
+    len: usize = 0,
+    cursor_byte: usize = 0,
+    column: u32 = 0,
+    row: u32 = 0,
+    in_viewport: bool = false,
 };
 
-const LiveCursorPosition = extern struct { column: u32, row: u32 };
-
-export fn ghostty_surface_live_cursor_position(surface: *Surface, result: *LiveCursorPosition) bool {
+export fn ghostty_surface_live_cursor(surface: *Surface, line: bool, result: *LiveCursor) bool {
     @import("../c_api_error.zig").clear();
-    const state = &surface.core_surface.renderer_state;
-    state.mutex.lockUncancelable(global.io());
-    defer state.mutex.unlock(global.io());
-    const screen = state.terminal.screens.active;
-    const point = screen.pages.pointFromPin(.viewport, screen.cursor.page_pin.*) orelse return false;
-    result.* = .{ .column = point.viewport.x, .row = point.viewport.y };
-    return true;
-}
-
-export fn ghostty_surface_live_cursor_line(surface: *Surface, result: *LiveCursorLine) bool {
-    @import("../c_api_error.zig").clear();
-    result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
+    result.* = .{};
     const state = &surface.core_surface.renderer_state;
     state.mutex.lockUncancelable(global.io());
     defer state.mutex.unlock(global.io());
     const screen = state.terminal.screens.active;
     const pin = screen.cursor.page_pin.*;
+    result.column = pin.x;
+    if (screen.pages.pointFromPin(.viewport, pin)) |point| {
+        result.row = point.viewport.y;
+        result.in_viewport = true;
+    }
+    if (!line) return true;
     const alloc = global.alloc();
     var writer: std.Io.Writer.Allocating = .init(alloc);
     defer writer.deinit();
@@ -162,14 +158,16 @@ export fn ghostty_surface_live_cursor_line(surface: *Surface, result: *LiveCurso
         @import("../c_api_error.zig").set(err);
         return false;
     };
-    result.* = .{ .text = copy.ptr, .len = copy.len, .cursor_byte = cursor_byte, .cursor_column = pin.x };
+    result.text = copy.ptr;
+    result.len = copy.len;
+    result.cursor_byte = cursor_byte;
     return true;
 }
 
-export fn ghostty_surface_live_cursor_line_free(result: *LiveCursorLine) void {
+export fn ghostty_surface_live_cursor_free(result: *LiveCursor) void {
     @import("../c_api_error.zig").clear();
     if (result.text) |ptr| global.alloc().free(ptr[0..result.len]);
-    result.* = .{ .text = null, .len = 0, .cursor_byte = 0, .cursor_column = 0 };
+    result.* = .{};
 }
 
 export fn ghostty_surface_shell_pid(surface: *Surface) u64 {

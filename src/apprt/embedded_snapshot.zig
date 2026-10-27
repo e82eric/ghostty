@@ -7,7 +7,7 @@ const Surface = @import("embedded.zig").Surface;
 const log = std.log.scoped(.embedded_window);
 
 export fn ghostty_surface_snapshot_logical_position(surface: *Surface, generation: u64, cell: terminal.SnapshotLogicalPosition.Cell, result: *terminal.SnapshotLogicalPosition.Position) bool {
-    const core = surface.core_surface;
+    const core = &surface.core_surface;
     core.renderer_state.mutex.lockUncancelable(global.io());
     defer core.renderer_state.mutex.unlock(global.io());
     if (core.snapshot.generation != generation) return false;
@@ -17,7 +17,7 @@ export fn ghostty_surface_snapshot_logical_position(surface: *Surface, generatio
 }
 
 export fn ghostty_surface_snapshot_resolve_logical_range(surface: *Surface, generation: u64, range: terminal.SnapshotLogicalPosition.Range, result: *terminal.SnapshotLogicalPosition.CellRange) bool {
-    const core = surface.core_surface;
+    const core = &surface.core_surface;
     core.renderer_state.mutex.lockUncancelable(global.io());
     defer core.renderer_state.mutex.unlock(global.io());
     if (core.snapshot.generation != generation) return false;
@@ -27,35 +27,6 @@ export fn ghostty_surface_snapshot_resolve_logical_range(surface: *Surface, gene
 }
 
 const SnapshotStyleRun = terminal.SnapshotStyleRuns.Run;
-const SnapshotStyleRuns = extern struct { runs: ?[*]SnapshotStyleRun, len: usize };
-
-/// Read resolved styles once while loading the Rust-owned document. Runs use
-/// physical source columns; UINT32_MAX means the preview's default color.
-export fn ghostty_surface_snapshot_style_runs(surface: *Surface, generation: u64, row: u64, result: *SnapshotStyleRuns) bool {
-    result.* = .{ .runs = null, .len = 0 };
-    const core = surface.core_surface;
-    const state = &core.renderer_state;
-    state.mutex.lockUncancelable(global.io());
-    defer state.mutex.unlock(global.io());
-    if (core.snapshot.generation != generation) return false;
-    const t = core.snapshot.terminal orelse return false;
-    const screen = t.screens.active;
-    const anchor: ?SnapshotAnchor = if (core.snapshot.text_row_anchor) |a|
-        .{ .pin = a.pin, .row = a.row }
-    else
-        snapshotViewportAnchor(screen);
-    const pin = snapshotCellPin(screen, .{ .x = 0, .y = row }, anchor) orelse return false;
-    const owned = terminal.SnapshotStyleRuns.capture(global.alloc(), t, pin) catch |err| {
-        @import("../c_api_error.zig").set(err);
-        return false;
-    };
-    result.* = .{ .runs = owned.ptr, .len = owned.len };
-    return true;
-}
-export fn ghostty_snapshot_style_runs_free(result: *SnapshotStyleRuns) void {
-    if (result.runs) |ptr| global.alloc().free(ptr[0..result.len]);
-    result.* = .{ .runs = null, .len = 0 };
-}
 
 // ghostty_snapshot_text_chunk_s
 const SnapshotTextChunk = extern struct {
@@ -66,11 +37,16 @@ const SnapshotTextChunk = extern struct {
     start_y: u16,
 };
 
-const SnapshotTextRow = extern struct {
-    text: ?[*]const u8,
-    columns: ?[*]const u32,
-    len: usize,
-    wraps_to_next: bool,
+// ghostty_snapshot_row_s
+const SnapshotRow = extern struct {
+    text: ?[*]const u8 = null,
+    columns: ?[*]const u32 = null,
+    len: usize = 0,
+    widths: ?[*]const u8 = null,
+    cell_count: u32 = 0,
+    style_runs: ?[*]const SnapshotStyleRun = null,
+    style_run_count: usize = 0,
+    wraps_to_next: bool = false,
 };
 
 const SnapshotTextCursor = struct {
@@ -200,7 +176,6 @@ export fn ghostty_surface_snapshot_resize(surface: *Surface, generation: u64, re
     _ = core.renderer_thread.mailbox.push(global.io(), .{
         .snapshot_decorations = .{ .arena = arena, .layers = &.{} },
     }, .{ .forever = {} });
-    core.snapshot.decoration_viewport = null;
     core.snapshot.text_row_anchor = null;
     map.* = terminal.SnapshotReflow.resizeMapped(core.alloc, t, grid.columns, grid.rows) catch |err| {
         core.alloc.destroy(map);
@@ -252,46 +227,6 @@ export fn ghostty_surface_snapshot_view(
         .viewport_rows = @intCast(@max(1, visible.end - visible.start)),
         .columns = original.pages.cols,
     };
-    return true;
-}
-
-export fn ghostty_surface_snapshot_resolve_cell(
-    surface: *Surface,
-    generation: u64,
-    requested: SnapshotCell,
-    snap_right: bool,
-    result: *SnapshotCell,
-) bool {
-    @import("../c_api_error.zig").clear();
-    const state = &surface.core_surface.renderer_state;
-    state.mutex.lockUncancelable(global.io());
-    defer state.mutex.unlock(global.io());
-    if (surface.core_surface.snapshot.generation != generation or
-        surface.core_surface.snapshot.terminal == null)
-    {
-        @import("../c_api_error.zig").set(error.SnapshotExpired);
-        return false;
-    }
-    const t = surface.core_surface.snapshot.terminal orelse {
-        @import("../c_api_error.zig").set(error.SnapshotUnavailable);
-        return false;
-    };
-    return snapshotResolveCell(t, requested, snap_right, result);
-}
-
-fn snapshotResolveCell(t: *terminal.Terminal, requested: SnapshotCell, snap_right: bool, result: *SnapshotCell) bool {
-    const screen = t.screens.active;
-    var pin = snapshotCellPin(screen, requested, snapshotViewportAnchor(screen)) orelse return false;
-    const page = pin.node.page();
-    const row = &page.rows.ptr(page.memory)[pin.y];
-    if (page.getCells(row)[pin.x].wide == .spacer_tail) {
-        if (snap_right and pin.x + 1 < pin.node.cols()) {
-            pin.x += 1;
-        } else if (pin.x > 0) {
-            pin.x -= 1;
-        }
-    }
-    result.* = .{ .x = pin.x, .y = requested.y };
     return true;
 }
 
@@ -476,7 +411,6 @@ export fn ghostty_surface_snapshot_apply_decorations(
         .{ .forever = {} },
     );
     owned = false;
-    surface.core_surface.snapshot.decoration_viewport = viewport;
     surface.core_surface.renderer_thread.wakeup.notify() catch {};
     return true;
 }
@@ -506,28 +440,6 @@ fn snapshotVisibleOrderedCellRanges(
         if (ranges[mid].end.y >= viewport.start) first = mid + 1 else last = mid;
     }
     return ranges[visible_start..first];
-}
-
-export fn ghostty_surface_snapshot_decorations_need_refresh(
-    surface: *Surface,
-    generation: u64,
-) bool {
-    @import("../c_api_error.zig").clear();
-    const state = &surface.core_surface.renderer_state;
-    state.mutex.lockUncancelable(global.io());
-    defer state.mutex.unlock(global.io());
-    if (surface.core_surface.snapshot.generation != generation or
-        surface.core_surface.snapshot.terminal == null)
-    {
-        @import("../c_api_error.zig").set(error.SnapshotExpired);
-        return false;
-    }
-    const t = state.presentation_terminal orelse {
-        @import("../c_api_error.zig").set(error.SnapshotUnavailable);
-        return false;
-    };
-    const viewport = snapshotViewportRows(t.screens.active) orelse return false;
-    return !std.meta.eql(viewport, surface.core_surface.snapshot.decoration_viewport orelse return true);
 }
 
 export fn ghostty_surface_snapshot_text_cursor_new(
@@ -610,14 +522,15 @@ export fn ghostty_surface_snapshot_text_cursor_next(
     return 1;
 }
 
-export fn ghostty_surface_snapshot_text_row(
+export fn ghostty_surface_snapshot_row(
     surface: *Surface,
     generation: u64,
     row: u64,
-    result: *SnapshotTextRow,
+    styles: bool,
+    result: *SnapshotRow,
 ) bool {
     @import("../c_api_error.zig").clear();
-    result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
+    result.* = .{};
     const state = &surface.core_surface.renderer_state;
     state.mutex.lockUncancelable(global.io());
     defer state.mutex.unlock(global.io());
@@ -638,10 +551,10 @@ export fn ghostty_surface_snapshot_text_row(
         snapshotViewportAnchor(screen);
     const pin = snapshotCellPin(screen, .{ .x = 0, .y = row }, anchor) orelse return false;
     surface.core_surface.snapshot.text_row_anchor = .{ .pin = pin, .row = row };
-    return snapshotTextRow(pin, result);
+    return snapshotRow(t, pin, styles, result);
 }
 
-fn snapshotTextRow(pin: terminal.PageList.Pin, result: *SnapshotTextRow) bool {
+fn snapshotRow(t: *const terminal.Terminal, pin: terminal.PageList.Pin, styles: bool, result: *SnapshotRow) bool {
     const alloc = global.alloc();
     const page = pin.node.page();
     var text_writer: std.Io.Writer.Allocating = .init(alloc);
@@ -672,21 +585,49 @@ fn snapshotTextRow(pin: terminal.PageList.Pin, result: *SnapshotTextRow) bool {
         return false;
     };
     for (points.items, columns) |point, *column| column.* = point.x;
+    const cells = page.getCells(page.getRow(pin.y));
+    const widths = alloc.alloc(u8, cells.len) catch |err| {
+        @import("../c_api_error.zig").set(err);
+        alloc.free(columns);
+        alloc.free(text_copy);
+        return false;
+    };
+    for (cells, widths) |cell, *width| width.* = switch (cell.wide) {
+        .wide => 2,
+        .spacer_tail => 0,
+        .narrow, .spacer_head => 1,
+    };
+    const runs: []const SnapshotStyleRun = if (styles)
+        terminal.SnapshotStyleRuns.capture(alloc, t, pin) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            alloc.free(widths);
+            alloc.free(columns);
+            alloc.free(text_copy);
+            return false;
+        }
+    else
+        &.{};
     result.* = .{
         .text = text_copy.ptr,
         .columns = columns.ptr,
         .len = written.len,
+        .widths = widths.ptr,
+        .cell_count = @intCast(widths.len),
+        .style_runs = if (styles) runs.ptr else null,
+        .style_run_count = runs.len,
         .wraps_to_next = page.rows.ptr(page.memory)[pin.y].wrap,
     };
     return true;
 }
 
-export fn ghostty_surface_snapshot_text_row_free(result: *SnapshotTextRow) void {
+export fn ghostty_surface_snapshot_row_free(result: *SnapshotRow) void {
     @import("../c_api_error.zig").clear();
     const alloc = global.alloc();
     if (result.text) |ptr| alloc.free(ptr[0..result.len]);
     if (result.columns) |ptr| alloc.free(ptr[0..result.len]);
-    result.* = .{ .text = null, .columns = null, .len = 0, .wraps_to_next = false };
+    if (result.widths) |ptr| alloc.free(ptr[0..result.cell_count]);
+    if (result.style_runs) |ptr| alloc.free(ptr[0..result.style_run_count]);
+    result.* = .{};
 }
 
 export fn ghostty_surface_snapshot_begin(

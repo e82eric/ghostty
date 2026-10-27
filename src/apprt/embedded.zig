@@ -1671,9 +1671,22 @@ pub const CAPI = struct {
             return switch (self.coord_tag) {
                 // Exact coordinates require a specific pin.
                 .exact => exact: {
-                    // Each point tag has a different vertical extent. In
-                    // particular, `.screen` includes all retained history,
-                    // which can be much taller than the active viewport.
+                    // Clamp our point to the bounds of the requested
+                    // coordinate space, not the active screen. Each point
+                    // tag has a different vertical extent: `.active` and
+                    // `.viewport` are `rows` tall, but `.screen` and
+                    // `.history` include all retained scrollback, which can
+                    // be thousands of rows. Clamping y to `rows - 1` (as
+                    // upstream does) silently moves any scrollback point
+                    // into the first few rows, so selections and text reads
+                    // driven by `.screen` coordinates (e.g. jumping to a
+                    // search match in history) land on the wrong text.
+                    //
+                    // To get the right bound we take the bottom-right pin for
+                    // this tag and convert it back to a point in the same
+                    // space. Width is the same in every space, so x is still
+                    // clamped to `cols - 1`. Covered by the "embedded screen
+                    // point spans full scrollback" test below.
                     const bottom_right = screen.pages.getBottomRight(tag) orelse
                         return null;
                     const bottom_right_point = screen.pages.pointFromPin(
