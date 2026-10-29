@@ -47,7 +47,36 @@ const SnapshotRow = extern struct {
     style_runs: ?[*]const SnapshotStyleRun = null,
     style_run_count: usize = 0,
     wraps_to_next: bool = false,
+    /// OSC 133 state: 0 none, 1 primary prompt, 2 prompt continuation.
+    semantic_prompt: u8 = 0,
+    /// First cell marked as input by OSC 133, or no_input_column.
+    input_column: u32 = no_input_column,
 };
+
+const no_input_column = std.math.maxInt(u32);
+
+const RowSemantics = struct { prompt: u8, input_column: u32 };
+
+/// The OSC 133 prompt state of a page row and its first input cell. The row
+/// flag can be a false positive, so a prompt row must also have prompt cells.
+fn rowSemantics(page: *const terminal.Page, y: usize) RowSemantics {
+    const row = page.getRow(y);
+    var input_column: u32 = no_input_column;
+    var has_prompt = false;
+    for (page.getCells(row), 0..) |cell, x| switch (cell.semantic_content) {
+        .prompt => has_prompt = true,
+        .input => if (input_column == no_input_column) {
+            input_column = @intCast(x);
+        },
+        .output => {},
+    };
+    const prompt: u8 = if (!has_prompt) 0 else switch (row.semantic_prompt) {
+        .none => 0,
+        .prompt => 1,
+        .prompt_continuation => 2,
+    };
+    return .{ .prompt = prompt, .input_column = input_column };
+}
 
 const SnapshotTextCursor = struct {
     surface: *Surface,
@@ -576,6 +605,7 @@ fn snapshotRow(t: *const terminal.Terminal, pin: terminal.PageList.Pin, styles: 
         }
     else
         &.{};
+    const semantics = rowSemantics(page, pin.y);
     result.* = .{
         .text = text_copy.ptr,
         .columns = columns.ptr,
@@ -585,6 +615,8 @@ fn snapshotRow(t: *const terminal.Terminal, pin: terminal.PageList.Pin, styles: 
         .style_runs = if (styles) runs.ptr else null,
         .style_run_count = runs.len,
         .wraps_to_next = page.rows.ptr(page.memory)[pin.y].wrap,
+        .semantic_prompt = semantics.prompt,
+        .input_column = semantics.input_column,
     };
     return true;
 }
@@ -677,6 +709,33 @@ test "snapshot text cursor streams exact text and cell points across pages" {
     try std.testing.expectEqual(full.string.len, count);
     cursor.reset();
     try std.testing.expect((try cursor.next()) != null);
+}
+
+test "snapshot rows report OSC 133 prompts and input columns" {
+    const alloc = std.testing.allocator;
+    var t: terminal.Terminal = try .init(std.testing.io, alloc, .{
+        .cols = 20,
+        .rows = 4,
+        .max_scrollback_bytes = 0,
+    });
+    defer t.deinit(alloc);
+    var stream = t.vtStream();
+    defer stream.deinit();
+    stream.nextSlice("\x1b]133;A\x07PS> \x1b]133;B\x07ls\r\n");
+    stream.nextSlice("\x1b]133;C\x07out\r\n");
+    stream.nextSlice("\x1b]133;D;0\x07PS> plain\r\n");
+    const screen = t.screens.active;
+    const expected = [_]RowSemantics{
+        .{ .prompt = 1, .input_column = 4 },
+        .{ .prompt = 0, .input_column = no_input_column },
+        .{ .prompt = 0, .input_column = no_input_column },
+    };
+    for (expected, 0..) |want, y| {
+        const pin = screen.pages.pin(.{ .screen = .{ .x = 0, .y = @intCast(y) } }).?;
+        const got = rowSemantics(pin.node.page(), pin.y);
+        try std.testing.expectEqual(want.prompt, got.prompt);
+        try std.testing.expectEqual(want.input_column, got.input_column);
+    }
 }
 
 test "ordered cell highlights select only viewport overlaps" {

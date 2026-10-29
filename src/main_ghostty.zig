@@ -237,6 +237,7 @@ test {
     _ = @import("font/main.zig");
     _ = @import("apprt.zig");
     _ = @import("apprt/snapshot_viewport.zig");
+    _ = @import("apprt/embedded_snapshot.zig");
     _ = @import("renderer.zig");
     _ = @import("termio.zig");
     _ = @import("input.zig");

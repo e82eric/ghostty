@@ -1385,6 +1385,10 @@ typedef struct {
     const ghostty_snapshot_style_run_s* style_runs;
     uintptr_t style_run_count;
     bool wraps_to_next;
+    /* OSC 133 prompt state: 0 none, 1 primary prompt, 2 continuation. */
+    uint8_t semantic_prompt;
+    /* First cell column marked as input by OSC 133, or UINT32_MAX. */
+    uint32_t input_column;
 } ghostty_snapshot_row_s;
 GHOSTTY_API bool ghostty_surface_snapshot_row(
     ghostty_surface_t, uint64_t generation, uint64_t row, bool styles,
