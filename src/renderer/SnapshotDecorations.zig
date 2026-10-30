@@ -6,6 +6,7 @@ const terminal = @import("../terminal/main.zig");
 pub const Style = struct {
     foreground: ?terminal.color.RGB = null,
     background: ?terminal.color.RGB = null,
+    invert_colored_background: bool = false,
 };
 
 pub const Layer = struct {

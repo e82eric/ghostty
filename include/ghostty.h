@@ -1455,7 +1455,9 @@ GHOSTTY_API void ghostty_surface_snapshot_selection_text_free(
     ghostty_snapshot_selection_text_s* result);
 /** RGB values are 0xRRGGBB. Flags bit 0 enables foreground; bit 1 enables background.
  * On a decoration layer, bit 3 marks it as the single-cell caret; custom
- * cursor shaders track that cell while the terminal cursor is hidden. */
+ * cursor shaders track that cell while the terminal cursor is hidden.
+ * On a decoration layer, bit 4 swaps the original foreground and background
+ * for cells whose background differs from the terminal default. */
 typedef struct {
     uint32_t foreground_rgb;
     uint32_t background_rgb;

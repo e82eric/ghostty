@@ -103,6 +103,7 @@ const SnapshotDecorationStyle = extern struct {
         return .{
             .foreground = if (self.flags & 1 != 0) snapshotRgb(self.foreground_rgb) else null,
             .background = if (self.flags & 2 != 0) snapshotRgb(self.background_rgb) else null,
+            .invert_colored_background = self.flags & 16 != 0,
         };
     }
 };
@@ -336,7 +337,7 @@ export fn ghostty_surface_snapshot_apply_decorations(
     };
     var caret: ?@import("../renderer/SnapshotDecorations.zig").Caret = null;
     for (layers, core_layers) |layer, *dst| {
-        if (layer.style.flags & ~@as(u32, 3 | 8) != 0) return false;
+        if (layer.style.flags & ~@as(u32, 3 | 8 | 16) != 0) return false;
         const ordered = if (layer.ranges) |ptr| ptr[0..layer.range_count] else if (layer.range_count == 0) &.{} else return false;
         // Flag bit 3 marks a single-cell caret layer for cursor shaders.
         if (layer.style.flags & 8 != 0) {

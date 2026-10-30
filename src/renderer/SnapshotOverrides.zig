@@ -150,6 +150,18 @@ fn decorate(style: *terminal.Style, decoration: Decorations.Style, colors: *cons
         style.bg_color = if (fg == .none) .{ .rgb = colors.foreground } else fg;
         style.flags.inverse = false;
     }
+    if (decoration.invert_colored_background and decoration.background != null) {
+        const background = switch (style.bg_color) {
+            .none => colors.background,
+            .rgb => |value| value,
+            .palette => |index| colors.palette[index],
+        };
+        if (!background.eql(colors.background)) {
+            style.bg_color = if (style.fg_color == .none) .{ .rgb = colors.foreground } else style.fg_color;
+            style.fg_color = .{ .rgb = background };
+            return;
+        }
+    }
     if (decoration.foreground) |rgb| style.fg_color = .{ .rgb = rgb };
     if (decoration.background) |rgb| style.bg_color = .{ .rgb = rgb };
 }
@@ -159,6 +171,29 @@ fn setStyle(raw: *terminal.page.Cell, dst: *terminal.Style, style: terminal.Styl
     // treats equal neighboring IDs as equal styles, so alternate them.
     raw.style_id = std.math.maxInt(@TypeOf(raw.style_id)) - @as(@TypeOf(raw.style_id), @intCast(x & 1));
     dst.* = style;
+}
+
+test "snapshot selection inverts colored backgrounds" {
+    var colors = std.mem.zeroes(terminal.RenderState.Colors);
+    colors.foreground = .{ .r = 240, .g = 220, .b = 180 };
+    const tint: terminal.color.RGB = .{ .r = 200, .g = 100, .b = 50 };
+    const base: terminal.color.RGB = .{ .r = 100, .g = 50, .b = 0 };
+    const decoration: Decorations.Style = .{ .background = tint, .invert_colored_background = true };
+    var style: terminal.Style = .{ .bg_color = .{ .rgb = base } };
+    decorate(&style, decoration, &colors);
+    try std.testing.expect(style.bg_color.eql(.{ .rgb = colors.foreground }));
+    try std.testing.expect(style.fg_color.eql(.{ .rgb = base }));
+    style = .{};
+    decorate(&style, decoration, &colors);
+    try std.testing.expect(style.bg_color.eql(.{ .rgb = tint }));
+    style = .{ .fg_color = .{ .rgb = base }, .flags = .{ .inverse = true } };
+    decorate(&style, decoration, &colors);
+    try std.testing.expect(style.bg_color.eql(.{ .rgb = colors.background }));
+    try std.testing.expect(style.fg_color.eql(.{ .rgb = base }));
+    try std.testing.expect(!style.flags.inverse);
+    style = .{ .bg_color = .{ .rgb = base } };
+    decorate(&style, .{ .background = tint }, &colors);
+    try std.testing.expect(style.bg_color.eql(.{ .rgb = tint }));
 }
 
 /// Replacement text in viewport row `y`, sorted by column.
