@@ -145,22 +145,37 @@ export fn ghostty_surface_live_cursor(surface: *Surface, line: bool, result: *Li
         @import("../c_api_error.zig").set(err);
         return false;
     };
-    const written = writer.written();
-    if (written.len != points.items.len) return false;
-    var cursor_byte = written.len;
+    if (writer.written().len != points.items.len) return false;
+    var cursor_byte: ?usize = null;
     for (points.items, 0..) |point, index| {
         if (point.x >= pin.x) {
             cursor_byte = index;
             break;
         }
     }
+    if (cursor_byte == null) {
+        // The formatter drops cells without text at the end of a row even
+        // when not trimming, so a cursor past the last character would land
+        // on the text's end. Pad those blank columns (e.g. a typed trailing
+        // space a TUI never wrote) so the text before the cursor keeps them.
+        const end_x: usize = if (points.items.len == 0) 0 else end: {
+            const last_x = points.items[points.items.len - 1].x;
+            const cell = pin.node.page().getRowAndCell(last_x, pin.y).cell;
+            break :end @as(usize, last_x) + @as(usize, if (cell.wide == .wide) 2 else 1);
+        };
+        if (pin.x > end_x) writer.writer.splatByteAll(' ', pin.x - end_x) catch |err| {
+            @import("../c_api_error.zig").set(err);
+            return false;
+        };
+    }
+    const written = writer.written();
     const copy = alloc.dupe(u8, written) catch |err| {
         @import("../c_api_error.zig").set(err);
         return false;
     };
     result.text = copy.ptr;
     result.len = copy.len;
-    result.cursor_byte = cursor_byte;
+    result.cursor_byte = cursor_byte orelse copy.len;
     return true;
 }
 
