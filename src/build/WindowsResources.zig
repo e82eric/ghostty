@@ -1,5 +1,10 @@
-//! Compile a Windows terminfo database using Git/MSYS ncurses tools.
+//! Windows build resources: the terminfo database, compiled with Git/MSYS
+//! ncurses tools, and the themes package that unpacks on Windows.
 const std = @import("std");
+
+/// The themes package for Windows builds: newer upstream packages contain
+/// theme names that are not valid Windows file names.
+pub const themes_dependency = "iterm2_themes_windows";
 
 pub fn compileTerminfo(b: *std.Build, source: std.Build.LazyPath, terminfo_share_dir: []const u8) !*std.Build.Step {
     const compiler = b.option([]const u8, "terminfo-compiler", "Path to tic for compiling the Windows terminfo database") orelse blk: {

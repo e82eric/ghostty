@@ -110,7 +110,7 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
 
     // Themes
     if (cfg.emit_themes) {
-        if (b.lazyDependency("iterm2_themes", .{})) |upstream| {
+        if (b.lazyDependency(if (cfg.target.result.os.tag == .windows) @import("WindowsResources.zig").themes_dependency else "iterm2_themes", .{})) |upstream| {
             const install_step = b.addInstallDirectory(.{
                 .source_dir = upstream.path(""),
                 .install_dir = .{ .custom = "share" },

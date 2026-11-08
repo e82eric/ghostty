@@ -128,10 +128,10 @@ fn rowSpan(
 fn cellStyle(raw: *terminal.page.Cell, style: terminal.Style) terminal.Style {
     var result: terminal.Style = if (raw.hasStyling()) style else .{};
     switch (raw.content_tag) {
-        .bg_color_palette => result.bg_color = .{ .palette = raw.content.color_palette.data },
+        .bg_color_palette => result.bg_color = .palette(raw.content.color_palette.data),
         .bg_color_rgb => {
             const rgb = raw.content.color_rgb;
-            result.bg_color = .{ .rgb = .{ .r = rgb.r, .g = rgb.g, .b = rgb.b } };
+            result.bg_color = .rgb(.{ .r = rgb.r, .g = rgb.g, .b = rgb.b });
         },
         .codepoint, .codepoint_grapheme => return result,
     }
@@ -146,24 +146,24 @@ fn decorate(style: *terminal.Style, decoration: Decorations.Style, colors: *cons
     if (decoration.foreground == null and decoration.background == null) return;
     if (style.flags.inverse) {
         const fg = style.fg_color;
-        style.fg_color = if (style.bg_color == .none) .{ .rgb = colors.background } else style.bg_color;
-        style.bg_color = if (fg == .none) .{ .rgb = colors.foreground } else fg;
+        style.fg_color = if (style.bg_color.tag == .none) .rgb(colors.background) else style.bg_color;
+        style.bg_color = if (fg.tag == .none) .rgb(colors.foreground) else fg;
         style.flags.inverse = false;
     }
     if (decoration.invert_colored_background and decoration.background != null) {
-        const background = switch (style.bg_color) {
+        const background = switch (style.bg_color.value()) {
             .none => colors.background,
             .rgb => |value| value,
             .palette => |index| colors.palette[index],
         };
         if (!background.eql(colors.background)) {
-            style.bg_color = if (style.fg_color == .none) .{ .rgb = colors.foreground } else style.fg_color;
-            style.fg_color = .{ .rgb = background };
+            style.bg_color = if (style.fg_color.tag == .none) .rgb(colors.foreground) else style.fg_color;
+            style.fg_color = .rgb(background);
             return;
         }
     }
-    if (decoration.foreground) |rgb| style.fg_color = .{ .rgb = rgb };
-    if (decoration.background) |rgb| style.bg_color = .{ .rgb = rgb };
+    if (decoration.foreground) |rgb| style.fg_color = .rgb(rgb);
+    if (decoration.background) |rgb| style.bg_color = .rgb(rgb);
 }
 
 fn setStyle(raw: *terminal.page.Cell, dst: *terminal.Style, style: terminal.Style, x: usize) void {
@@ -179,21 +179,21 @@ test "snapshot selection inverts colored backgrounds" {
     const tint: terminal.color.RGB = .{ .r = 200, .g = 100, .b = 50 };
     const base: terminal.color.RGB = .{ .r = 100, .g = 50, .b = 0 };
     const decoration: Decorations.Style = .{ .background = tint, .invert_colored_background = true };
-    var style: terminal.Style = .{ .bg_color = .{ .rgb = base } };
+    var style: terminal.Style = .{ .bg_color = .rgb(base) };
     decorate(&style, decoration, &colors);
-    try std.testing.expect(style.bg_color.eql(.{ .rgb = colors.foreground }));
-    try std.testing.expect(style.fg_color.eql(.{ .rgb = base }));
+    try std.testing.expect(style.bg_color == terminal.Style.Color.rgb(colors.foreground));
+    try std.testing.expect(style.fg_color == terminal.Style.Color.rgb(base));
     style = .{};
     decorate(&style, decoration, &colors);
-    try std.testing.expect(style.bg_color.eql(.{ .rgb = tint }));
-    style = .{ .fg_color = .{ .rgb = base }, .flags = .{ .inverse = true } };
+    try std.testing.expect(style.bg_color == terminal.Style.Color.rgb(tint));
+    style = .{ .fg_color = .rgb(base), .flags = .{ .inverse = true } };
     decorate(&style, decoration, &colors);
-    try std.testing.expect(style.bg_color.eql(.{ .rgb = colors.background }));
-    try std.testing.expect(style.fg_color.eql(.{ .rgb = base }));
+    try std.testing.expect(style.bg_color == terminal.Style.Color.rgb(colors.background));
+    try std.testing.expect(style.fg_color == terminal.Style.Color.rgb(base));
     try std.testing.expect(!style.flags.inverse);
-    style = .{ .bg_color = .{ .rgb = base } };
+    style = .{ .bg_color = .rgb(base) };
     decorate(&style, .{ .background = tint }, &colors);
-    try std.testing.expect(style.bg_color.eql(.{ .rgb = tint }));
+    try std.testing.expect(style.bg_color == terminal.Style.Color.rgb(tint));
 }
 
 /// Replacement text in viewport row `y`, sorted by column.
@@ -313,7 +313,7 @@ test "SnapshotOverrides replaces text in the render state only" {
     try std.testing.expect(label.raw.hasStyling());
     try std.testing.expect(label.style.flags.bold);
     try std.testing.expectEqual(.single, label.style.flags.underline);
-    try std.testing.expect(label.style.fg_color.eql(.{ .rgb = gold }));
+    try std.testing.expect(label.style.fg_color == terminal.Style.Color.rgb(gold));
     try std.testing.expectEqual(@as(u21, 'h'), ts.cell(0, 0).raw.codepoint());
     try std.testing.expect(!ts.cell(0, 0).raw.hasStyling());
 
@@ -348,11 +348,11 @@ test "SnapshotOverrides earlier layers take priority and resolve inverse" {
     try ts.update(&overrides);
 
     const first = ts.cell(1, 0);
-    try std.testing.expect(first.style.bg_color.eql(.{ .rgb = red }));
+    try std.testing.expect(first.style.bg_color == terminal.Style.Color.rgb(red));
     try std.testing.expect(!first.style.flags.inverse);
     // The inverse cell's foreground is the default background.
-    try std.testing.expect(first.style.fg_color.eql(.{ .rgb = ts.state.colors.background }));
-    try std.testing.expect(ts.cell(2, 0).style.bg_color.eql(.{ .rgb = blue }));
+    try std.testing.expect(first.style.fg_color == terminal.Style.Color.rgb(ts.state.colors.background));
+    try std.testing.expect(ts.cell(2, 0).style.bg_color == terminal.Style.Color.rgb(blue));
     try std.testing.expect(ts.cell(3, 0).style.flags.inverse);
     // Neighboring decorated cells never share a style ID.
     try std.testing.expect(first.raw.style_id != ts.cell(2, 0).raw.style_id);
@@ -378,12 +378,12 @@ test "SnapshotOverrides layers cover wide characters by their head" {
 
     try std.testing.expectEqual(.wide, ts.cell(1, 0).raw.wide);
     try std.testing.expectEqual(.spacer_tail, ts.cell(2, 0).raw.wide);
-    try std.testing.expect(ts.cell(1, 0).style.bg_color.eql(.{ .rgb = red }));
-    try std.testing.expect(ts.cell(2, 0).style.bg_color.eql(.{ .rgb = red }));
-    try std.testing.expect(ts.cell(3, 0).style.bg_color.eql(.{ .rgb = blue }));
+    try std.testing.expect(ts.cell(1, 0).style.bg_color == terminal.Style.Color.rgb(red));
+    try std.testing.expect(ts.cell(2, 0).style.bg_color == terminal.Style.Color.rgb(red));
+    try std.testing.expect(ts.cell(3, 0).style.bg_color == terminal.Style.Color.rgb(blue));
     // Decorating keeps the cell's text, including combining marks.
     const accent = ts.cell(4, 0);
-    try std.testing.expect(accent.style.bg_color.eql(.{ .rgb = blue }));
+    try std.testing.expect(accent.style.bg_color == terminal.Style.Color.rgb(blue));
     try std.testing.expectEqual(.codepoint_grapheme, accent.raw.content_tag);
     try std.testing.expectEqualSlices(u21, &.{0x301}, accent.grapheme);
 }
