@@ -19514,10 +19514,6 @@ test "Terminal: eraseDisplay complete at prompt not on last row scrolls" {
     try testing.expect(t.screens.active.pages.total_rows > t.screens.active.pages.rows);
 }
 
-test {
-    _ = @import("host_regression_tests.zig");
-}
-
 test "Terminal: eraseDisplay complete at input-only prompt scrolls" {
     const alloc = testing.allocator;
     const io_impl = testing.io;

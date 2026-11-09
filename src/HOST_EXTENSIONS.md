@@ -18,7 +18,9 @@ the smaller integration hooks in existing Ghostty files.
 | `c_api_host.zig` | Host initialization, argument quoting, and error accessors | C initialization wrapper and export import |
 | `config/c_api_host.zig` | Theme and font overrides, theme-directory enumeration | Config C API export import |
 | `config/c_get_host.zig` | Extra configuration value conversions | Config getter hooks |
-| `build/HostLibrary.zig` | `host-lib` install for external hosts and ConPTY installation | Build entry point |
+| `build/HostLibrary.zig` | `host-lib` install for external hosts, the host header, and ConPTY installation | One line in `build.zig` |
+| `../include/ghostty_host.h` | C declarations for every host API; includes `ghostty.h` | Hosts include it instead of `ghostty.h` |
+| `host_tests.zig` | References every fork test file | One line in the `main_ghostty.zig` test block |
 | `build/WindowsResources.zig` | Compile terminfo with Git/MSYS ncurses tools; pin a themes package that unpacks on Windows | Resource build hooks |
 
 `terminal/SnapshotLogicalPosition.zig` resolves logical line/UTF-8 offsets to
@@ -27,8 +29,14 @@ also capture the logical origin of windowed line-split documents; retained
 picker candidates need no resize map or additional positional payload.
 
 Standalone host regression tests live in `terminal/host_regression_tests.zig`
-and `input/host_key_tests.zig`; the owning upstream modules reference them.
-Tests for extracted APIs remain beside their implementation.
+and `input/host_key_tests.zig`. Tests for extracted APIs remain beside their
+implementation. Reference new fork test files from `host_tests.zig`, not from
+upstream files. (`input/host_key_tests.zig` is the exception: its helper runs
+inside an upstream key encoding test.)
+
+New C declarations go in `include/ghostty_host.h`. Only edits that must extend
+an upstream type, such as the `wgpu` platform enum value, its structs, and the
+platform union member, stay in `include/ghostty.h`.
 
 Some upstream edits are necessary: platform union tags, renderer state and
 message hooks, terminal choice for rendering/scrolling, resize notification

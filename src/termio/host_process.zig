@@ -51,6 +51,33 @@ test "Windows TERMINFO path supports MSYS ncurses" {
     }
 }
 
+/// An OSC 7 URL path for a Windows drive is `/C:/dir`. Drop the leading
+/// slash so the pwd names `C:/dir`; otherwise new surfaces that inherit it
+/// can't access it and fall back to the process working directory.
+pub fn windowsDrivePath(path: []const u8) []const u8 {
+    if (comptime builtin.os.tag != .windows) return path;
+    if (path.len >= 3 and
+        path[0] == '/' and
+        std.ascii.isAlphabetic(path[1]) and
+        path[2] == ':')
+    {
+        return path[1..];
+    }
+    return path;
+}
+
+test "windowsDrivePath" {
+    const testing = std.testing;
+    if (comptime builtin.os.tag == .windows) {
+        try testing.expectEqualStrings("C:/Users/me", windowsDrivePath("/C:/Users/me"));
+        try testing.expectEqualStrings("C:", windowsDrivePath("/C:"));
+    } else {
+        try testing.expectEqualStrings("/C:/Users/me", windowsDrivePath("/C:/Users/me"));
+    }
+    try testing.expectEqualStrings("/home/me", windowsDrivePath("/home/me"));
+    try testing.expectEqualStrings("/C", windowsDrivePath("/C"));
+}
+
 pub fn signalQuit(pipe: std.os.windows.HANDLE) void {
     const windows = @import("../os/windows.zig");
     const Api = struct {

@@ -1588,7 +1588,7 @@ pub const StreamHandler = struct {
         var stack_alloc_buf: [1024]u8 = undefined;
         var stack_alloc: std.heap.BufferFirstAllocator = .init(&stack_alloc_buf, arena_alloc.allocator());
         defer arena_alloc.deinit();
-        const path = windowsDrivePath(try uri.path.toRawMaybeAlloc(stack_alloc.allocator()));
+        const path = @import("host_process.zig").windowsDrivePath(try uri.path.toRawMaybeAlloc(stack_alloc.allocator()));
 
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
@@ -1948,33 +1948,6 @@ pub const StreamHandler = struct {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
 };
-
-/// An OSC 7 URL path for a Windows drive is `/C:/dir`. Drop the leading
-/// slash so the pwd names `C:/dir`; otherwise new surfaces that inherit it
-/// can't access it and fall back to the process working directory.
-fn windowsDrivePath(path: []const u8) []const u8 {
-    if (comptime builtin.os.tag != .windows) return path;
-    if (path.len >= 3 and
-        path[0] == '/' and
-        std.ascii.isAlphabetic(path[1]) and
-        path[2] == ':')
-    {
-        return path[1..];
-    }
-    return path;
-}
-
-test "windowsDrivePath" {
-    const testing = std.testing;
-    if (comptime builtin.os.tag == .windows) {
-        try testing.expectEqualStrings("C:/Users/me", windowsDrivePath("/C:/Users/me"));
-        try testing.expectEqualStrings("C:", windowsDrivePath("/C:"));
-    } else {
-        try testing.expectEqualStrings("/C:/Users/me", windowsDrivePath("/C:/Users/me"));
-    }
-    try testing.expectEqualStrings("/home/me", windowsDrivePath("/home/me"));
-    try testing.expectEqualStrings("/C", windowsDrivePath("/C"));
-}
 
 /// Returns the raw (percent-decoded) host of an OSC 7 URI.
 ///

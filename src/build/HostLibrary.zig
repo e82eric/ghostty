@@ -18,6 +18,11 @@ pub fn add(
     const host_step = b.step("host-lib", "Install the libraries and resources an embedding host links against");
     resources.addStepDependencies(host_step);
 
+    // Upstream's build installs ghostty.h; hosts include the fork's header.
+    const header_install = b.addInstallHeaderFile(b.path("include/ghostty_host.h"), "ghostty_host.h");
+    b.getInstallStep().dependOn(&header_install.step);
+    host_step.dependOn(&header_install.step);
+
     if (config.target.result.os.tag == .windows) {
         const conpty_arch = switch (config.target.result.cpu.arch) {
             .x86_64 => "x64",

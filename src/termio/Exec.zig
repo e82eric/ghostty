@@ -2339,10 +2339,6 @@ test "execCommand windows: direct command is passed through unchanged" {
     try testing.expectEqualStrings("arg with spaces", result[1]);
 }
 
-test {
-    _ = @import("host_process.zig");
-}
-
 test "init frees the env when it fails" {
     const testing = std.testing;
 
