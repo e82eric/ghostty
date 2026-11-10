@@ -44,6 +44,8 @@ pub fn apply(self: *const Self, state: *terminal.RenderState) void {
     const applied = row_data.items(.applied_styles);
     const viewport = state.viewportStart();
     const range = state.rowDataRange();
+    // Columns of the current row a higher-priority layer already decorated.
+    var claimed: std.StaticBitSet(std.math.maxInt(terminal.size.CellCountInt) + 1) = .empty;
     for (range.start..range.end) |i| {
         if (!dirties[i]) continue;
         const cells = row_cells[i].slice();
@@ -52,11 +54,13 @@ pub fn apply(self: *const Self, state: *terminal.RenderState) void {
         const y: ?u16 = if (i >= viewport and i < viewport + state.rows) @intCast(i - viewport) else null;
         var changed = false;
 
-        // Earlier layers take priority, so apply them last.
-        var layer_i = value.layers.len;
-        while (layer_i > 0) {
-            layer_i -= 1;
-            const layer = value.layers[layer_i];
+        // Earlier layers take priority: each cell takes only the first layer
+        // that covers it, decided against the cell's own colors. Stacking
+        // layers would let a lower one leak its foreground, or its background
+        // into an upper one's colored-background check (a yank over the caret
+        // would invert the caret instead of tinting the cell).
+        claimed.setRangeValue(.{ .start = 0, .end = raws.len }, false);
+        for (value.layers) |layer| {
             if (layer.style.foreground == null and layer.style.background == null) continue;
             for (layer.ranges) |hl| {
                 const span = rowSpan(hl, pins[i], serials[i], state.cols) orelse continue;
@@ -66,6 +70,8 @@ pub fn apply(self: *const Self, state: *terminal.RenderState) void {
                     if (raws[head].wide == .spacer_tail) continue;
                     const end = if (raws[head].wide == .wide) @min(head + 2, raws.len) else head + 1;
                     for (head..end) |x| {
+                        if (claimed.isSet(x)) continue;
+                        claimed.set(x);
                         // Replacement text uses the cell's own colors, not layers.
                         if (y) |row| if (self.textAt(@intCast(x), row) != null) continue;
                         var style = cellStyle(&raws[x], styles[x]);
@@ -356,6 +362,30 @@ test "SnapshotOverrides earlier layers take priority and resolve inverse" {
     try std.testing.expect(ts.cell(3, 0).style.flags.inverse);
     // Neighboring decorated cells never share a style ID.
     try std.testing.expect(first.raw.style_id != ts.cell(2, 0).raw.style_id);
+}
+
+test "SnapshotOverrides an upper layer ignores the colors of lower layers" {
+    var ts: TestState = try .init("hello");
+    defer ts.deinit();
+    var overrides: Self = .{};
+    defer overrides.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const tint: terminal.color.RGB = .{ .r = 80, .g = 80, .b = 120 };
+    const accent: terminal.color.RGB = .{ .r = 255, .g = 128, .b = 0 };
+    const caret_fg: terminal.color.RGB = .{ .r = 1, .g = 2, .b = 3 };
+    const layers = try arena.allocator().dupe(Decorations.Layer, &.{
+        // A yank tints its cells and inverts only cells that are colored.
+        .{ .style = .{ .background = tint, .invert_colored_background = true }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 1, 3, 0)}) },
+        // The caret sits under the yank at its first cell.
+        .{ .style = .{ .foreground = caret_fg, .background = accent }, .ranges = try arena.allocator().dupe(terminal.highlight.Flattened, &.{try ts.highlight(arena.allocator(), 1, 1, 0)}) },
+    });
+    overrides.replace(.{ .arena = arena, .layers = layers });
+    try ts.update(&overrides);
+
+    const cell = ts.cell(1, 0);
+    try std.testing.expect(cell.style.bg_color == terminal.Style.Color.rgb(tint));
+    try std.testing.expect(cell.style.fg_color != terminal.Style.Color.rgb(caret_fg));
+    try std.testing.expect(ts.cell(2, 0).style.bg_color == terminal.Style.Color.rgb(tint));
 }
 
 test "SnapshotOverrides layers cover wide characters by their head" {
