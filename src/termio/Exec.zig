@@ -593,7 +593,8 @@ pub const Config = struct {
     rt_post_fork_info: Command.RtPostForkInfo,
 };
 
-const Subprocess = struct {
+/// Public so the host backend can describe the process it does not start.
+pub const Subprocess = struct {
     const c = @import("posix_c");
 
     arena: std.heap.ArenaAllocator,

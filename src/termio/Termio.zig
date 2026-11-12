@@ -308,6 +308,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
     // Setup our backend.
     var backend = opts.backend;
     backend.initTerminal(&term);
+    if (backend == .host) backend.host.reportSettings(&opts.config, opts.full_config);
 
     // Create our stream handler. This points to memory in self so it
     // isn't safe to use until self.* is set.
@@ -481,6 +482,7 @@ pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !voi
     // from another thread.
     self.terminal_stream.handler.changeConfig(&self.config);
     td.backend.changeConfig(&self.config);
+    if (self.backend == .host) self.backend.host.reportSettings(&self.config, null);
 
     // Update the configuration that we know about.
     //
@@ -593,6 +595,8 @@ pub fn sizeReport(self: *Termio, td: *ThreadData, style: termio.Message.SizeRepo
 }
 
 fn sizeReportLocked(self: *Termio, td: *ThreadData, style: termio.Message.SizeReport) !void {
+    // The host's own terminal reports its size to the program.
+    if (self.backend == .host) return;
     const grid_size = self.size.grid();
     const report_size: terminalpkg.size_report.Size = .{
         .rows = grid_size.rows,
@@ -809,6 +813,8 @@ pub fn colorSchemeReport(self: *Termio, td: *ThreadData, force: bool) !void {
 }
 
 pub fn colorSchemeReportLocked(self: *Termio, td: *ThreadData, force: bool) !void {
+    // The host's own terminal reports the scheme to the program.
+    if (self.backend == .host) return;
     if (!force and !self.renderer_state.terminal.modes.get(.report_color_scheme)) {
         return;
     }

@@ -23,6 +23,53 @@ pub const Callbacks = extern struct {
     /// Bytes for the pty: encoded input and query replies.
     write: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void = null,
     resize: ?*const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void = null,
+    /// What this surface would have run had it owned the process. Called
+    /// once, on the thread creating the surface, before creation returns.
+    /// The pointers are valid only during the call.
+    spawn: ?*const fn (?*anyopaque, *const Spawn) callconv(.c) void = null,
+    /// What the surface's terminal is configured with. Called while the
+    /// surface is created and again, from its IO thread, whenever the
+    /// configuration changes.
+    settings: ?*const fn (?*anyopaque, *const Settings) callconv(.c) void = null,
+};
+
+/// ghostty_host_env_s
+pub const EnvVar = extern struct {
+    key: [*:0]const u8,
+    value: [*:0]const u8,
+};
+
+/// ghostty_host_spawn_s
+pub const Spawn = extern struct {
+    /// A Windows command line; elsewhere the arguments joined the same way.
+    command: [*:0]const u8,
+    cwd: ?[*:0]const u8,
+    env: [*]const EnvVar,
+    env_len: usize,
+};
+
+/// ghostty_host_settings_s
+///
+/// The parts of the configuration that change how a terminal parses or what
+/// it answers, for a host that keeps a second terminal in step with this one.
+pub const Settings = extern struct {
+    palette: [256][3]u8,
+    foreground: [3]u8,
+    background: [3]u8,
+    cursor: [3]u8,
+    has_cursor: bool,
+    /// 0 bar, 1 block, 2 underline, 3 hollow block.
+    cursor_style: u8,
+    /// -1 when the configuration leaves it to the program.
+    cursor_blink: i8,
+    dark: bool,
+    image_storage_limit: u64,
+    /// The rest is known only when the surface is created.
+    has_creation: bool,
+    grapheme_cluster: bool,
+    /// maxInt for no limit.
+    scrollback_bytes: u64,
+    scrollback_lines: u64,
 };
 
 /// Owns `initial` and `continuation`.
@@ -68,6 +115,91 @@ pub fn deinit(self: *Host) void {
     if (self.initial) |bytes| self.alloc.free(bytes);
     if (self.continuation) |bytes| self.alloc.free(bytes);
     self.* = undefined;
+}
+
+/// Tell the host what process this surface would have started. Takes
+/// ownership of `cfg.env`, as `Exec.init` does.
+pub fn describeSpawn(self: *Host, gpa: Allocator, cfg: termio.Exec.Config) void {
+    const f = self.callbacks.spawn orelse {
+        var env = cfg.env;
+        env.deinit();
+        return;
+    };
+    // The same preparation Exec makes: TERM, shell integration, the
+    // configured environment, and the command as it would be run.
+    var subprocess = termio.Exec.Subprocess.init(gpa, cfg) catch |err| {
+        log.warn("unable to describe the process for the host err={}", .{err});
+        return;
+    };
+    defer subprocess.deinit();
+    const alloc = subprocess.arena.allocator();
+
+    const args = alloc.alloc([]const u8, subprocess.args.len) catch return;
+    for (subprocess.args, args) |arg, *out| out.* = arg;
+    const command = @import("../Command.zig").windowsCreateCommandLine(alloc, args) catch return;
+
+    var vars: std.ArrayList(EnvVar) = .empty;
+    if (subprocess.env) |*env| {
+        var it = env.iterator();
+        while (it.next()) |entry| {
+            const key = alloc.dupeSentinel(u8, entry.key_ptr.*, 0) catch return;
+            const value = alloc.dupeSentinel(u8, entry.value_ptr.*, 0) catch return;
+            vars.append(alloc, .{ .key = key, .value = value }) catch return;
+        }
+    }
+
+    f(self.callbacks.userdata, &.{
+        .command = command.ptr,
+        .cwd = if (subprocess.cwd) |cwd| cwd.ptr else null,
+        .env = vars.items.ptr,
+        .env_len = vars.items.len,
+    });
+}
+
+/// Tell the host how this surface's terminal is configured. `full` is given
+/// when the surface is created; a configuration change has only `config`.
+pub fn reportSettings(
+    self: *const Host,
+    config: *const termio.DerivedConfig,
+    full: ?*const @import("../config.zig").Config,
+) void {
+    const f = self.callbacks.settings orelse return;
+    var settings: Settings = .{
+        .palette = undefined,
+        .foreground = rgb(config.foreground.toTerminalRGB()),
+        .background = rgb(config.background.toTerminalRGB()),
+        .cursor = .{ 0, 0, 0 },
+        .has_cursor = false,
+        .cursor_style = switch (config.cursor_style) {
+            .bar => 0,
+            .block => 1,
+            .underline => 2,
+            .block_hollow => 3,
+        },
+        .cursor_blink = if (config.cursor_blink) |blink| @intFromBool(blink) else -1,
+        .dark = config.conditional_state.theme == .dark,
+        .image_storage_limit = config.image_storage_limit,
+        .has_creation = false,
+        .grapheme_cluster = false,
+        .scrollback_bytes = std.math.maxInt(u64),
+        .scrollback_lines = std.math.maxInt(u64),
+    };
+    for (config.palette, &settings.palette) |color, *out| out.* = rgb(color);
+    if (config.cursor_color) |color| if (color.toTerminalRGB()) |value| {
+        settings.cursor = rgb(value);
+        settings.has_cursor = true;
+    };
+    if (full) |c| {
+        settings.has_creation = true;
+        settings.grapheme_cluster = c.@"grapheme-width-method" == .unicode;
+        if (c.@"scrollback-limit-bytes".optional()) |v| settings.scrollback_bytes = v;
+        if (c.@"scrollback-limit-lines".optional()) |v| settings.scrollback_lines = v;
+    }
+    f(self.callbacks.userdata, &settings);
+}
+
+fn rgb(color: terminal.color.RGB) [3]u8 {
+    return .{ color.r, color.g, color.b };
 }
 
 /// Replace the fresh terminal with the snapshot's visible screen. History

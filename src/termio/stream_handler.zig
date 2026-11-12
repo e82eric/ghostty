@@ -155,7 +155,12 @@ pub const StreamHandler = struct {
     inline fn messageWriter(self: *StreamHandler, msg: termio.Message) void {
         // The host's own terminal answers the program, so these are dropped.
         if (self.drop_replies) switch (msg) {
-            .write_small, .write_stable, .write_alloc, .size_report => {
+            .write_small,
+            .write_stable,
+            .write_alloc,
+            .size_report,
+            .color_scheme_report,
+            => {
                 msg.deinit();
                 return;
             },

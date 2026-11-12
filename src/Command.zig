@@ -615,7 +615,7 @@ fn createWindowsEnvBlock(allocator: mem.Allocator, env_map: *const EnvMap) ![]u1
 }
 
 /// Copied from Zig. This function could be made public in child_process.zig instead.
-fn windowsCreateCommandLine(allocator: mem.Allocator, argv: []const []const u8) ![:0]u8 {
+pub fn windowsCreateCommandLine(allocator: mem.Allocator, argv: []const []const u8) ![:0]u8 {
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     const writer = &buf.writer;

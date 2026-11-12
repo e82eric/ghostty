@@ -665,12 +665,7 @@ pub fn init(
     // This separate block ({}) is important because our errdefers must
     // be scoped here to be valid.
     {
-        // A host that drives the terminal itself asked for this surface.
-        var io_backend: termio.Backend = if (termio.Host.takePending()) |pending| host: {
-            var io_host = pending;
-            io_host.terminal_alloc = alloc;
-            break :host .{ .host = io_host };
-        } else exec: {
+        var io_backend: termio.Backend = backend: {
             // Exec.init takes ownership of the env even if it fails, so the
             // errdefer for it must not reach past the call.
             const env = termio_env: {
@@ -693,8 +688,7 @@ pub fn init(
                 break :termio_env env;
             };
 
-            // Initialize our IO backend
-            break :exec .{ .exec = try termio.Exec.init(alloc, .{
+            const exec_config: termio.Exec.Config = .{
                 .command = command,
                 .env = env,
                 .env_override = config.env,
@@ -706,7 +700,19 @@ pub fn init(
                 .term = config.term,
                 .rt_pre_exec_info = .init(config),
                 .rt_post_fork_info = .init(config),
-            }) };
+            };
+
+            // A host that drives the terminal itself asked for this surface.
+            // It starts the process, so it is told what that would have been.
+            if (termio.Host.takePending()) |pending| {
+                var io_host = pending;
+                io_host.terminal_alloc = alloc;
+                io_host.describeSpawn(alloc, exec_config);
+                break :backend .{ .host = io_host };
+            }
+
+            // Initialize our IO backend
+            break :backend .{ .exec = try termio.Exec.init(alloc, exec_config) };
         };
         errdefer io_backend.deinit();
 

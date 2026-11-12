@@ -73,6 +73,35 @@ GHOSTTY_API bool ghostty_surface_take_gpu_frame(ghostty_surface_t,
                                                 ghostty_gpu_frame_s*);
 GHOSTTY_API bool ghostty_surface_read_font(ghostty_surface_t, bool bold, ghostty_font_data_s*);
 GHOSTTY_API void ghostty_font_data_free(ghostty_font_data_s*);
+typedef struct {
+  const char* key;
+  const char* value;
+} ghostty_host_env_s;
+/* The process a surface would have started had it owned one. */
+typedef struct {
+  /* A Windows command line; elsewhere the arguments joined the same way. */
+  const char* command;
+  const char* cwd; /* may be NULL */
+  const ghostty_host_env_s* env;
+  size_t env_len;
+} ghostty_host_spawn_s;
+/* The configuration that changes how a terminal parses or what it answers. */
+typedef struct {
+  uint8_t palette[256][3];
+  uint8_t foreground[3];
+  uint8_t background[3];
+  uint8_t cursor[3];
+  bool has_cursor;
+  uint8_t cursor_style; /* 0 bar, 1 block, 2 underline, 3 hollow block */
+  int8_t cursor_blink;  /* -1 when left to the program */
+  bool dark;
+  uint64_t image_storage_limit;
+  /* The rest is known only when the surface is created. */
+  bool has_creation;
+  bool grapheme_cluster;
+  uint64_t scrollback_bytes; /* UINT64_MAX for no limit */
+  uint64_t scrollback_lines;
+} ghostty_host_settings_s;
 /* A backend driven by the host: no pty and no child process. */
 typedef struct {
   void* userdata;
@@ -80,6 +109,12 @@ typedef struct {
   void (*write)(void* userdata, const uint8_t* bytes, size_t len);
   void (*resize)(void* userdata, uint16_t cols, uint16_t rows,
                  uint32_t width_px, uint32_t height_px);
+  /* Called once while the surface is created, on the creating thread. The
+     pointers are valid only during the call. */
+  void (*spawn)(void* userdata, const ghostty_host_spawn_s*);
+  /* Called while the surface is created and, from its IO thread, whenever
+     the configuration changes. */
+  void (*settings)(void* userdata, const ghostty_host_settings_s*);
 } ghostty_host_backend_s;
 /* The next surface created on this thread uses a host-driven backend and,
    when a snapshot is given, starts from its visible screen. */
