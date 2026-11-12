@@ -59,6 +59,10 @@ pub const StreamHandler = struct {
     /// and XTCHECKSUM may change how it's calculated.
     xt_checksum_report: bool,
 
+    /// Whether replies to the program are discarded instead of written,
+    /// for a backend whose host answers from its own terminal.
+    drop_replies: bool = false,
+
     //---------------------------------------------------------------
     // Internal state
 
@@ -149,6 +153,14 @@ pub const StreamHandler = struct {
     }
 
     inline fn messageWriter(self: *StreamHandler, msg: termio.Message) void {
+        // The host's own terminal answers the program, so these are dropped.
+        if (self.drop_replies) switch (msg) {
+            .write_small, .write_stable, .write_alloc, .size_report => {
+                msg.deinit();
+                return;
+            },
+            else => {},
+        };
         self.termio_mailbox.send(msg, self.renderer_state.mutex);
         self.termio_messaged = true;
     }

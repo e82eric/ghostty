@@ -73,6 +73,25 @@ GHOSTTY_API bool ghostty_surface_take_gpu_frame(ghostty_surface_t,
                                                 ghostty_gpu_frame_s*);
 GHOSTTY_API bool ghostty_surface_read_font(ghostty_surface_t, bool bold, ghostty_font_data_s*);
 GHOSTTY_API void ghostty_font_data_free(ghostty_font_data_s*);
+/* A backend driven by the host: no pty and no child process. */
+typedef struct {
+  void* userdata;
+  /* Bytes for the pty: encoded input and query replies. */
+  void (*write)(void* userdata, const uint8_t* bytes, size_t len);
+  void (*resize)(void* userdata, uint16_t cols, uint16_t rows,
+                 uint32_t width_px, uint32_t height_px);
+} ghostty_host_backend_s;
+/* The next surface created on this thread uses a host-driven backend and,
+   when a snapshot is given, starts from its visible screen. */
+GHOSTTY_API bool ghostty_host_backend_next(const ghostty_host_backend_s*,
+                                           const uint8_t* snapshot,
+                                           size_t snapshot_len);
+GHOSTTY_API void ghostty_surface_host_output(ghostty_surface_t,
+                                             const uint8_t* bytes, size_t len);
+/* Replace the surface's terminal by a snapshot's visible screen. Call it
+   from the thread that feeds output. */
+GHOSTTY_API void ghostty_surface_host_resync(ghostty_surface_t,
+                                             const uint8_t* snapshot, size_t len);
 GHOSTTY_API uint64_t ghostty_surface_shell_pid(ghostty_surface_t);
 /* Original shell creation FILETIME on Windows; zero when unavailable. */
 GHOSTTY_API uint64_t ghostty_surface_shell_creation_time(ghostty_surface_t);

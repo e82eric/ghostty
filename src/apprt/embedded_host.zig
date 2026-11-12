@@ -185,6 +185,36 @@ export fn ghostty_surface_live_cursor_free(result: *LiveCursor) void {
     result.* = .{};
 }
 
+/// Make the next surface created on this thread use a host-driven backend,
+/// optionally starting from a terminal snapshot. The snapshot is copied.
+export fn ghostty_host_backend_next(
+    callbacks: *const @import("../termio.zig").Host.Callbacks,
+    snapshot_ptr: ?[*]const u8,
+    snapshot_len: usize,
+) bool {
+    @import("../c_api_error.zig").clear();
+    const initial: ?[]const u8 = if (snapshot_ptr) |ptr| ptr[0..snapshot_len] else null;
+    @import("../termio.zig").Host.setPending(callbacks.*, initial) catch return false;
+    return true;
+}
+
+/// Feed output to a surface with a host-driven backend. Safe to call from
+/// any thread while the surface is alive.
+export fn ghostty_surface_host_output(surface: *Surface, ptr: [*]const u8, len: usize) void {
+    if (len == 0) return;
+    const io = &surface.core_surface.io;
+    if (io.backend != .host) return;
+    io.processOutput(ptr[0..len]);
+}
+
+/// Replace the terminal of a surface with a host-driven backend by a
+/// snapshot's visible screen. Call it from the thread that feeds output.
+export fn ghostty_surface_host_resync(surface: *Surface, ptr: [*]const u8, len: usize) void {
+    const io = &surface.core_surface.io;
+    if (io.backend != .host) return;
+    @import("../termio.zig").Host.resync(io, ptr[0..len]);
+}
+
 export fn ghostty_surface_shell_pid(surface: *Surface) u64 {
     return surface.core_surface.getProcessInfo(.shell_pid) orelse 0;
 }
