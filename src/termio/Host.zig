@@ -312,6 +312,9 @@ fn restore(
 
     t.deinit(alloc);
     t.* = decoded.toOwned();
+    // The snapshot brings the limits of the terminal it was made from, and
+    // the rest of the page its screen sits on. The surface keeps neither.
+    t.setScrollbackMaxBytes(0);
 
     if (t.cols != cols or t.rows != rows) {
         t.resize(alloc, .{ .cols = cols, .rows = rows }) catch |err| {

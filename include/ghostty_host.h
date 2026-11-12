@@ -157,6 +157,12 @@ GHOSTTY_API bool ghostty_surface_key_usb(ghostty_surface_t,
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
 
+/** Whether a wheel scroll over a host-backed surface asks for history. Such
+ * a surface keeps none: the host shows its own, with
+ * ghostty_surface_snapshot_begin_from. False when the program takes the
+ * wheel, when a frozen snapshot is already shown, and for other backends. */
+GHOSTTY_API bool ghostty_surface_host_wheel_wants_history(ghostty_surface_t);
+
 /** As ghostty_surface_snapshot_begin, presenting the terminal in a whole
  * encoded snapshot, fitted to the surface, instead of a copy of the
  * surface's own. For a host whose own terminal holds the history. */

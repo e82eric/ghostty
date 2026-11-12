@@ -275,7 +275,12 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         break :opts .{
             .cols = grid_size.columns,
             .rows = grid_size.rows,
-            .max_scrollback_bytes = opts.full_config.@"scrollback-limit-bytes".optional(),
+            // A host-backed surface mirrors a screen. Its host holds the
+            // history and is told the configured limits.
+            .max_scrollback_bytes = if (opts.backend == .host)
+                0
+            else
+                opts.full_config.@"scrollback-limit-bytes".optional(),
             .max_scrollback_lines = opts.full_config.@"scrollback-limit-lines".optional(),
             .default_modes = default_modes,
             .default_cursor_style = opts.config.cursor_style,

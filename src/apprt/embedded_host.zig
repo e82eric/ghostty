@@ -215,6 +215,21 @@ export fn ghostty_surface_host_resync(surface: *Surface, ptr: [*]const u8, len: 
     @import("../termio.zig").Host.resync(io, ptr[0..len]);
 }
 
+/// Whether a wheel scroll over a host-backed surface asks for history: the
+/// surface keeps none, so the host has to show its own. False when the
+/// program takes the wheel (mouse reporting, or the alternate screen), when
+/// a frozen snapshot is already shown, and for other backends.
+export fn ghostty_surface_host_wheel_wants_history(surface: *Surface) bool {
+    const core = &surface.core_surface;
+    if (core.io.backend != .host) return false;
+    core.renderer_state.mutex.lockUncancelable(global.io());
+    defer core.renderer_state.mutex.unlock(global.io());
+    if (core.snapshot.terminal != null) return false;
+    const t = &core.io.terminal;
+    if (t.screens.active_key == .alternate) return false;
+    return !(core.config.mouse_reporting and t.flags.mouse_event != .none);
+}
+
 export fn ghostty_surface_shell_pid(surface: *Surface) u64 {
     return surface.core_surface.getProcessInfo(.shell_pid) orelse 0;
 }
