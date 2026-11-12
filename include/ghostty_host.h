@@ -101,6 +101,13 @@ typedef struct {
   bool grapheme_cluster;
   uint64_t scrollback_bytes; /* UINT64_MAX for no limit */
   uint64_t scrollback_lines;
+  /* How the surface's terminal names itself. */
+  char xtversion[96];  /* NUL-terminated */
+  char enquiry[128];   /* NUL-terminated, cut to fit */
+  uint16_t da_conformance;
+  uint16_t da_features[4];
+  uint16_t da_features_len;
+  uint16_t da_secondary[3];
 } ghostty_host_settings_s;
 /* A backend driven by the host: no pty and no child process. */
 typedef struct {
@@ -149,6 +156,14 @@ GHOSTTY_API bool ghostty_surface_key_usb(ghostty_surface_t,
  * updating its own terminal without changing the captured contents. */
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
+
+/** As ghostty_surface_snapshot_begin, presenting the terminal in a whole
+ * encoded snapshot, fitted to the surface, instead of a copy of the
+ * surface's own. For a host whose own terminal holds the history. */
+GHOSTTY_API bool ghostty_surface_snapshot_begin_from(ghostty_surface_t,
+                                                     const uint8_t* snapshot,
+                                                     size_t len,
+                                                     uint64_t* generation);
 
 /** End frozen snapshot presentation and reveal the newest live state. */
 GHOSTTY_API bool ghostty_surface_snapshot_end(ghostty_surface_t,

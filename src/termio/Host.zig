@@ -70,6 +70,18 @@ pub const Settings = extern struct {
     /// maxInt for no limit.
     scrollback_bytes: u64,
     scrollback_lines: u64,
+    /// How the surface's terminal names itself. These repeat what
+    /// stream_handler.zig answers and must be kept in step with it.
+    /// The XTVERSION text, NUL-terminated.
+    xtversion: [96]u8,
+    /// The answer to ENQ, NUL-terminated and cut to fit.
+    enquiry: [128]u8,
+    /// Primary device attributes: conformance level, then features.
+    da_conformance: u16,
+    da_features: [4]u16,
+    da_features_len: u16,
+    /// Secondary device attributes.
+    da_secondary: [3]u16,
 };
 
 /// Owns `initial` and `continuation`.
@@ -183,7 +195,23 @@ pub fn reportSettings(
         .grapheme_cluster = false,
         .scrollback_bytes = std.math.maxInt(u64),
         .scrollback_lines = std.math.maxInt(u64),
+        .xtversion = @splat(0),
+        .enquiry = @splat(0),
+        // StreamHandler.deviceAttributes: a VT220 with color, and clipboard
+        // access when writes are allowed.
+        .da_conformance = 62,
+        .da_features = .{ 22, 52, 0, 0 },
+        .da_features_len = if (config.clipboard_write != .deny) 2 else 1,
+        .da_secondary = .{ 1, 10, 0 },
     };
+    // StreamHandler.reportXtversion.
+    _ = std.fmt.bufPrint(
+        settings.xtversion[0 .. settings.xtversion.len - 1],
+        "ghostty {s}",
+        .{@import("../build_config.zig").version_string},
+    ) catch {};
+    const enquiry_len = @min(config.enquiry_response.len, settings.enquiry.len - 1);
+    @memcpy(settings.enquiry[0..enquiry_len], config.enquiry_response[0..enquiry_len]);
     for (config.palette, &settings.palette) |color, *out| out.* = rgb(color);
     if (config.cursor_color) |color| if (color.toTerminalRGB()) |value| {
         settings.cursor = rgb(value);

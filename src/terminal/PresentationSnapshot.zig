@@ -33,6 +33,113 @@ pub fn capture(alloc: std.mem.Allocator, io: std.Io, source: *const Terminal) !T
     return decoded.toOwned();
 }
 
+/// A frozen terminal from a whole encoded snapshot made elsewhere, fitted to
+/// `live`: the terminal a surface shows, which may hold less history than the
+/// bytes do. Under the host backend the host's terminal is the complete one.
+/// The caller must hold `live`'s mutex.
+pub fn decode(alloc: std.mem.Allocator, io: std.Io, bytes: []const u8, live: *const Terminal) !Terminal {
+    var reader: std.Io.Reader = .fixed(bytes);
+    var decoded = try snapshot.decodeExact(alloc, io, &reader, .{
+        // An unfinished escape sequence is the live terminal's business.
+        .max_continuation_bytes = 1 << 20,
+    });
+    defer decoded.deinit(alloc);
+    var result = decoded.toOwned();
+    errdefer result.deinit(alloc);
+    result.width_px = live.width_px;
+    result.height_px = live.height_px;
+    result.flags.resize_pull_scrollback = live.flags.resize_pull_scrollback;
+    if (result.cols != live.cols or result.rows != live.rows) {
+        try result.resize(alloc, .{ .cols = live.cols, .rows = live.rows });
+    }
+    // The wire codec omits derived prompt state. The viewport starts at the
+    // bottom, where the live one is while its history is elsewhere.
+    var live_screens = live.screens.all;
+    var screens = live_screens.iterator();
+    while (screens.next()) |entry| {
+        if (result.screens.get(entry.key)) |dst| dst.semantic_prompt = entry.value.*.semantic_prompt;
+    }
+    result.modes.set(.cursor_visible, false);
+    result.flags.dirty.clear = true;
+    return result;
+}
+
+fn screenText(alloc: std.mem.Allocator, t: *Terminal) ![:0]const u8 {
+    return t.screens.active.selectionString(alloc, .{
+        .sel = .init(t.screens.active.pages.getTopLeft(.screen), t.screens.active.pages.getBottomRight(.screen).?, false),
+        .trim = false,
+    });
+}
+
+test "decoded presentation snapshot shows history the live terminal lacks" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    // The host's terminal keeps everything; the surface's keeps its screen.
+    var host = try Terminal.init(testing.io, alloc, .{ .cols = 40, .rows = 6, .max_scrollback_bytes = null });
+    defer host.deinit(alloc);
+    var live = try Terminal.init(testing.io, alloc, .{ .cols = 40, .rows = 6, .max_scrollback_bytes = 0 });
+    defer live.deinit(alloc);
+    var host_stream = host.vtStream();
+    defer host_stream.deinit();
+    var live_stream = live.vtStream();
+    defer live_stream.deinit();
+    for (0..3000) |i| {
+        var buf: [64]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buf, "\x1b[3{d}mrow {d} 界\x1b[0m\r\n", .{ i % 8, i });
+        host_stream.nextSlice(line);
+        live_stream.nextSlice(line);
+    }
+    // Left unfinished: a snapshot from a running shell can end mid-sequence.
+    host_stream.nextSlice("prompt> \x1b[3");
+    live_stream.nextSlice("prompt> \x1b[3");
+    try testing.expect(live.screens.active.pages.total_rows < 1000);
+
+    var encoded: std.Io.Writer.Allocating = .init(alloc);
+    defer encoded.deinit();
+    try snapshot.encode(alloc, &encoded.writer, &host, .{ .continuation = .{ .bytes = "\x1b[3" } });
+
+    var frozen = try decode(alloc, testing.io, encoded.written(), &live);
+    defer frozen.deinit(alloc);
+    try testing.expectEqual(host.screens.active.pages.total_rows, frozen.screens.active.pages.total_rows);
+    try testing.expect(!frozen.modes.get(.cursor_visible));
+    const expected = try screenText(alloc, &host);
+    defer alloc.free(expected);
+    const actual = try screenText(alloc, &frozen);
+    defer alloc.free(actual);
+    try testing.expectEqualStrings(expected, actual);
+    try testing.expect(std.mem.indexOf(u8, actual, "row 0 界\n") != null);
+    try testing.expect(std.mem.indexOf(u8, actual, "row 2999 界\n") != null);
+    frozen.screens.active.assertIntegrity();
+}
+
+test "decoded presentation snapshot is fitted to the live terminal's size" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var host = try Terminal.init(testing.io, alloc, .{ .cols = 80, .rows = 24, .max_scrollback_bytes = null });
+    defer host.deinit(alloc);
+    var live = try Terminal.init(testing.io, alloc, .{ .cols = 20, .rows = 5, .max_scrollback_bytes = 0 });
+    defer live.deinit(alloc);
+    var stream = host.vtStream();
+    defer stream.deinit();
+    for (0..200) |i| {
+        var buf: [96]u8 = undefined;
+        stream.nextSlice(try std.fmt.bufPrint(&buf, "a line of text that is longer than twenty cells {d}\r\n", .{i}));
+    }
+    var encoded: std.Io.Writer.Allocating = .init(alloc);
+    defer encoded.deinit();
+    try snapshot.encode(alloc, &encoded.writer, &host, .{ .continuation = .ground });
+
+    var frozen = try decode(alloc, testing.io, encoded.written(), &live);
+    defer frozen.deinit(alloc);
+    try testing.expectEqual(@as(usize, 20), frozen.cols);
+    try testing.expectEqual(@as(usize, 5), frozen.rows);
+    // Reflowed, not cut: each line now wraps over three rows.
+    try testing.expect(frozen.screens.active.pages.total_rows >= 600);
+    frozen.screens.active.assertIntegrity();
+
+    try testing.expectError(error.EndOfStream, decode(alloc, testing.io, encoded.written()[0 .. encoded.written().len / 2], &live));
+}
+
 test "eager presentation snapshot preserves full history viewport and independent text" {
     const testing = std.testing;
     const alloc = testing.allocator;
