@@ -278,7 +278,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
             // A host-backed surface mirrors a screen. Its host holds the
             // history and is told the configured limits.
             .max_scrollback_bytes = if (opts.backend == .host)
-                0
+                (if (opts.backend.host.callbacks.ordered) termio.Host.ordered_history_bytes else 0)
             else
                 opts.full_config.@"scrollback-limit-bytes".optional(),
             .max_scrollback_lines = opts.full_config.@"scrollback-limit-lines".optional(),
@@ -534,8 +534,21 @@ pub fn resize(
     td: *ThreadData,
     size: renderer.Size,
 ) !void {
-    self.size = size;
     const grid_size = size.grid();
+
+    // The host resizes an ordered surface's terminal, where its own was.
+    if (self.backend == .host and self.backend.host.callbacks.ordered) {
+        {
+            self.renderer_state.mutex.lockUncancelable(global.io());
+            defer self.renderer_state.mutex.unlock(global.io());
+            self.size = size;
+        }
+        try self.backend.resize(grid_size, size.terminal());
+        _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
+        self.renderer_wakeup.notify() catch {};
+        return;
+    }
+    self.size = size;
 
     // Enter the critical area that we want to keep small
     {

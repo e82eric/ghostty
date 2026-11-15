@@ -202,6 +202,14 @@ export fn ghostty_surface_host_resync(surface: *Surface, ptr: [*]const u8, len: 
     @import("../termio.zig").Host.resync(io, ptr[0..len]);
 }
 
+/// Resize the terminal of an ordered host-backed surface. Call it from the
+/// thread that feeds output.
+export fn ghostty_surface_host_resized(surface: *Surface, cols: u16, rows: u16) void {
+    const io = &surface.core_surface.io;
+    if (io.backend != .host or cols == 0 or rows == 0) return;
+    @import("../termio.zig").Host.resized(io, cols, rows);
+}
+
 /// Whether a wheel scroll over a host-backed surface asks for history: the
 /// surface keeps none, so the host has to show its own. False when the
 /// program takes the wheel (mouse reporting, or the alternate screen), when

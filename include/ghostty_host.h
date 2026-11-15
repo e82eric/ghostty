@@ -122,6 +122,9 @@ typedef struct {
   /* Called while the surface is created and, from its IO thread, whenever
      the configuration changes. */
   void (*settings)(void* userdata, const ghostty_host_settings_s*);
+  /* The host resizes the surface's terminal, with
+     ghostty_surface_host_resized; the surface never reflows on its own. */
+  bool ordered;
 } ghostty_host_backend_s;
 /* A surface gets this backend when ghostty_surface_config_s.host_backend
    points at one while the surface is created. It is copied. */
@@ -131,6 +134,10 @@ GHOSTTY_API void ghostty_surface_host_output(ghostty_surface_t,
    from the thread that feeds output. */
 GHOSTTY_API void ghostty_surface_host_resync(ghostty_surface_t,
                                              const uint8_t* snapshot, size_t len);
+/* Resize an ordered surface's terminal. Call it from the thread that feeds
+   output, where the host's own terminal was resized. */
+GHOSTTY_API void ghostty_surface_host_resized(ghostty_surface_t,
+                                              uint16_t cols, uint16_t rows);
 GHOSTTY_API uint64_t ghostty_surface_shell_pid(ghostty_surface_t);
 /* Original shell creation FILETIME on Windows; zero when unavailable. */
 GHOSTTY_API uint64_t ghostty_surface_shell_creation_time(ghostty_surface_t);

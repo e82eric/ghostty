@@ -31,6 +31,11 @@ pub const Callbacks = extern struct {
     /// surface is created and again, from its IO thread, whenever the
     /// configuration changes.
     settings: ?*const fn (?*anyopaque, *const Settings) callconv(.c) void = null,
+    /// The host says when this surface's terminal changes size, with
+    /// `resized`, at the point in the output where its own did. The surface
+    /// then never reflows on its own, so the two stay the same without a
+    /// resync, and it keeps some history out of sight for reflow to use.
+    ordered: bool = false,
 };
 
 /// ghostty_host_env_s
@@ -222,7 +227,7 @@ pub fn resync(io: *termio.Termio, bytes: []const u8) void {
     const continuation = continuation: {
         io.renderer_state.mutex.lockUncancelable(global.io());
         defer io.renderer_state.mutex.unlock(global.io());
-        const result = restore(scratch, io.alloc, &io.terminal, bytes);
+        const result = restore(scratch, io.alloc, &io.terminal, bytes, io.backend.host.callbacks.ordered);
 
         // The snapshot carries the parser state; ours is stale.
         const stream = &io.terminal_stream;
@@ -244,6 +249,30 @@ pub fn resync(io: *termio.Termio, bytes: []const u8) void {
     }
 }
 
+/// History an ordered surface keeps out of sight. Reflow moves lines between
+/// the screen and history, so a copy without any reflows differently.
+pub const ordered_history_bytes = 4 << 20;
+
+/// Resize an ordered surface's terminal. The host calls this from the thread
+/// that feeds output, where its own terminal was resized.
+pub fn resized(io: *termio.Termio, cols: u16, rows: u16) void {
+    {
+        io.renderer_state.mutex.lockUncancelable(global.io());
+        defer io.renderer_state.mutex.unlock(global.io());
+        io.terminal.resize(io.alloc, .{
+            .cols = cols,
+            .rows = rows,
+            .cell_size_px = .{
+                .width = io.size.cell.width,
+                .height = io.size.cell.height,
+            },
+        }) catch |err| {
+            log.warn("unable to resize host surface err={}", .{err});
+        };
+    }
+    io.terminal_stream.handler.queueRender() catch {};
+}
+
 /// Swap the snapshot's terminal into `t`, keeping `t`'s size and colors.
 /// Returns the snapshot's unfinished parser input, owned by `scratch`.
 fn restore(
@@ -251,6 +280,7 @@ fn restore(
     alloc: Allocator,
     t: *terminal.Terminal,
     bytes: []const u8,
+    ordered: bool,
 ) ?[]u8 {
     var continuation: ?[]u8 = null;
     var reader: std.Io.Reader = .fixed(bytes);
@@ -272,8 +302,10 @@ fn restore(
     // swap the fresh terminal holds the snapshot's colors and frees them.
     const restored = &decoded.terminal.?;
     std.mem.swap(@TypeOf(restored.colors), &restored.colors, &t.colors);
-    restored.width_px = t.width_px;
-    restored.height_px = t.height_px;
+    if (!ordered) {
+        restored.width_px = t.width_px;
+        restored.height_px = t.height_px;
+    }
     restored.flags.resize_pull_scrollback = t.flags.resize_pull_scrollback;
     const cols = t.cols;
     const rows = t.rows;
@@ -282,9 +314,10 @@ fn restore(
     t.* = decoded.toOwned();
     // The snapshot brings the limits of the terminal it was made from, and
     // the rest of the page its screen sits on. The surface keeps neither.
-    t.setScrollbackMaxBytes(0);
+    // An ordered surface keeps the snapshot's size, which the host changes.
+    t.setScrollbackMaxBytes(if (ordered) ordered_history_bytes else 0);
 
-    if (t.cols != cols or t.rows != rows) {
+    if (!ordered and (t.cols != cols or t.rows != rows)) {
         t.resize(alloc, .{ .cols = cols, .rows = rows }) catch |err| {
             log.warn("unable to fit host snapshot to surface err={}", .{err});
         };
