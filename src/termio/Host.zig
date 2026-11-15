@@ -312,6 +312,17 @@ fn restore(
 
     t.deinit(alloc);
     t.* = decoded.toOwned();
+    // The pixels of the pictures on screen follow, when the host sent them.
+    // The snapshot ends there, with no history and no FINISH record.
+    while (true) {
+        const progress = decoder.next(alloc, t) catch |err| {
+            if (err != error.EndOfStream) {
+                log.warn("unable to restore host snapshot pictures err={}", .{err});
+            }
+            break;
+        };
+        if (progress == null) break;
+    }
     // The snapshot brings the limits of the terminal it was made from, and
     // the rest of the page its screen sits on. The surface keeps neither.
     // An ordered surface keeps the snapshot's size, which the host changes.
