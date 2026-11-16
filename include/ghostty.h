@@ -560,6 +560,9 @@ typedef struct {
   const char* GHOSTTY_NULLABLE initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  // Not NULL: a ghostty_host_backend_s (ghostty_host.h). The surface has no
+  // pty and starts no process; the host drives its terminal. Copied.
+  const void* GHOSTTY_NULLABLE host_backend;
 } ghostty_surface_config_s;
 
 typedef struct {

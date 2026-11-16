@@ -2,8 +2,8 @@
 //! process: the host pushes output in through `Termio.processOutput` and
 //! receives writes and resizes through callbacks.
 //!
-//! An optional terminal snapshot replaces the fresh terminal's contents, so a
-//! surface can attach to a terminal that is already running elsewhere.
+//! The terminal starts empty. A host showing a terminal that already runs
+//! elsewhere replaces its contents with `resync` once the surface exists.
 const Host = @This();
 
 const std = @import("std");
@@ -84,54 +84,29 @@ pub const Settings = extern struct {
     da_secondary: [3]u16,
 };
 
-/// Owns `initial` and `continuation`.
-alloc: Allocator,
-
 /// The allocator Termio creates and destroys its terminal with. The surface
 /// sets this before handing the backend to Termio.
 terminal_alloc: Allocator,
 callbacks: Callbacks,
 
-/// Owned snapshot bytes, released once the terminal is initialized.
-initial: ?[]u8 = null,
-
-/// Unfinished parser input carried by the snapshot, replayed once the
-/// terminal stream exists.
-continuation: ?[]u8 = null,
-
-/// The backend the next surface created on this thread uses. A surface
-/// config field would be cleaner; this avoids extending an upstream struct.
-threadlocal var pending: ?Host = null;
-
-/// Make the next surface created on this thread use a host backend. The
-/// snapshot is copied.
-pub fn setPending(callbacks: Callbacks, initial: ?[]const u8) Allocator.Error!void {
-    if (pending) |*old| old.deinit();
-    // The host may call this before the library's allocator exists.
-    const alloc = std.heap.smp_allocator;
-    pending = .{
-        .alloc = alloc,
-        .terminal_alloc = alloc,
+/// A backend for the surface whose creation options named `callbacks`. It
+/// owns nothing. The surface sets `terminal_alloc` before handing it to
+/// Termio.
+pub fn init(callbacks: Callbacks) Host {
+    return .{
+        .terminal_alloc = std.heap.smp_allocator,
         .callbacks = callbacks,
-        .initial = if (initial) |bytes| try alloc.dupe(u8, bytes) else null,
     };
 }
 
-pub fn takePending() ?Host {
-    const result = pending;
-    pending = null;
-    return result;
-}
-
 pub fn deinit(self: *Host) void {
-    if (self.initial) |bytes| self.alloc.free(bytes);
-    if (self.continuation) |bytes| self.alloc.free(bytes);
     self.* = undefined;
 }
 
 /// Tell the host what process this surface would have started. Takes
-/// ownership of `cfg.env`, as `Exec.init` does.
-pub fn describeSpawn(self: *Host, gpa: Allocator, cfg: termio.Exec.Config) void {
+/// ownership of `cfg.env`, as `Exec.init` does. An error means the host was
+/// told nothing, and the surface cannot be one it drives.
+pub fn describeSpawn(self: *Host, gpa: Allocator, cfg: termio.Exec.Config) !void {
     const f = self.callbacks.spawn orelse {
         var env = cfg.env;
         env.deinit();
@@ -141,22 +116,22 @@ pub fn describeSpawn(self: *Host, gpa: Allocator, cfg: termio.Exec.Config) void 
     // configured environment, and the command as it would be run.
     var subprocess = termio.Exec.Subprocess.init(gpa, cfg) catch |err| {
         log.warn("unable to describe the process for the host err={}", .{err});
-        return;
+        return err;
     };
     defer subprocess.deinit();
     const alloc = subprocess.arena.allocator();
 
-    const args = alloc.alloc([]const u8, subprocess.args.len) catch return;
+    const args = try alloc.alloc([]const u8, subprocess.args.len);
     for (subprocess.args, args) |arg, *out| out.* = arg;
-    const command = @import("../Command.zig").windowsCreateCommandLine(alloc, args) catch return;
+    const command = try @import("../Command.zig").windowsCreateCommandLine(alloc, args);
 
     var vars: std.ArrayList(EnvVar) = .empty;
     if (subprocess.env) |*env| {
         var it = env.iterator();
         while (it.next()) |entry| {
-            const key = alloc.dupeSentinel(u8, entry.key_ptr.*, 0) catch return;
-            const value = alloc.dupeSentinel(u8, entry.value_ptr.*, 0) catch return;
-            vars.append(alloc, .{ .key = key, .value = value }) catch return;
+            const key = try alloc.dupeSentinel(u8, entry.key_ptr.*, 0);
+            const value = try alloc.dupeSentinel(u8, entry.value_ptr.*, 0);
+            try vars.append(alloc, .{ .key = key, .value = value });
         }
     }
 
@@ -230,20 +205,13 @@ fn rgb(color: terminal.color.RGB) [3]u8 {
     return .{ color.r, color.g, color.b };
 }
 
-/// Replace the fresh terminal with the snapshot's visible screen. History
-/// records in the snapshot are left unread.
+/// Set up the terminal Termio has just made for this backend.
 pub fn initTerminal(self: *Host, t: *terminal.Terminal) void {
+    _ = self;
     // ConPTY keeps only the active screen; see Exec.initTerminal.
     if (comptime @import("builtin").os.tag == .windows) {
         t.flags.resize_pull_scrollback = false;
     }
-
-    const bytes = self.initial orelse return;
-    defer {
-        self.alloc.free(bytes);
-        self.initial = null;
-    }
-    self.continuation = restore(self.alloc, self.terminal_alloc, t, bytes);
 }
 
 /// Replace a live surface's terminal with the snapshot's visible screen, at
@@ -331,13 +299,10 @@ pub fn threadEnter(
     io: *termio.Termio,
     td: *termio.Termio.ThreadData,
 ) !void {
+    _ = self;
     _ = alloc;
+    _ = io;
     td.backend = .{ .host = .{} };
-    if (self.continuation) |bytes| {
-        io.processOutput(bytes);
-        self.alloc.free(bytes);
-        self.continuation = null;
-    }
 }
 
 pub fn threadExit(self: *Host, td: *termio.Termio.ThreadData) void {

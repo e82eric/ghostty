@@ -479,6 +479,11 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// See `takeHostBackend`.
+    host_backend: ?HostBackend = null,
+
+    const HostBackend = @import("../termio.zig").Host;
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -520,7 +525,19 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Not null: the surface has no pty and starts no process. The
+        /// host drives its terminal through these callbacks. Copied.
+        host_backend: ?*const HostBackend.Callbacks = null,
     };
+
+    /// The backend the options asked for, until the core surface takes it.
+    /// One it never takes, because creation failed first, is freed here.
+    pub fn takeHostBackend(self: *Surface) ?HostBackend {
+        const result = self.host_backend;
+        self.host_backend = null;
+        return result;
+    }
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
         self.* = .{
@@ -534,7 +551,9 @@ pub const Surface = struct {
             },
             .size = .{ .width = 800, .height = 600 },
             .cursor_pos = .{ .x = -1, .y = -1 },
+            .host_backend = if (opts.host_backend) |callbacks| .init(callbacks.*) else null,
         };
+        errdefer if (self.host_backend) |*backend| backend.deinit();
 
         // Add ourselves to the list of surfaces on the app.
         try app.core_app.addSurface(self);

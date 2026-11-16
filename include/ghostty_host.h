@@ -123,11 +123,8 @@ typedef struct {
      the configuration changes. */
   void (*settings)(void* userdata, const ghostty_host_settings_s*);
 } ghostty_host_backend_s;
-/* The next surface created on this thread uses a host-driven backend and,
-   when a snapshot is given, starts from its visible screen. */
-GHOSTTY_API bool ghostty_host_backend_next(const ghostty_host_backend_s*,
-                                           const uint8_t* snapshot,
-                                           size_t snapshot_len);
+/* A surface gets this backend when ghostty_surface_config_s.host_backend
+   points at one while the surface is created. It is copied. */
 GHOSTTY_API void ghostty_surface_host_output(ghostty_surface_t,
                                              const uint8_t* bytes, size_t len);
 /* Replace the surface's terminal by a snapshot's visible screen. Call it
