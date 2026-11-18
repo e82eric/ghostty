@@ -273,7 +273,7 @@ pub fn resized(io: *termio.Termio, cols: u16, rows: u16) void {
     io.terminal_stream.handler.queueRender() catch {};
 }
 
-/// Swap the snapshot's terminal into `t`, keeping `t`'s size and colors.
+/// Swap the snapshot's terminal into `t`, keeping `t`'s colors.
 /// Returns the snapshot's unfinished parser input, owned by `scratch`.
 fn restore(
     scratch: Allocator,
@@ -307,8 +307,6 @@ fn restore(
         restored.height_px = t.height_px;
     }
     restored.flags.resize_pull_scrollback = t.flags.resize_pull_scrollback;
-    const cols = t.cols;
-    const rows = t.rows;
 
     t.deinit(alloc);
     t.* = decoded.toOwned();
@@ -325,14 +323,13 @@ fn restore(
     }
     // The snapshot brings the limits of the terminal it was made from, and
     // the rest of the page its screen sits on. The surface keeps neither.
-    // An ordered surface keeps the snapshot's size, which the host changes.
     t.setScrollbackMaxBytes(if (ordered) ordered_history_bytes else 0);
 
-    if (!ordered and (t.cols != cols or t.rows != rows)) {
-        t.resize(alloc, .{ .cols = cols, .rows = rows }) catch |err| {
-            log.warn("unable to fit host snapshot to surface err={}", .{err});
-        };
-    }
+    // The terminal keeps the snapshot's size. An ordered surface's is the
+    // host's to change. Any other is given the pixels for that grid by its
+    // host, and its own resize may still be waiting when the snapshot comes:
+    // fitting the snapshot to the size before it would cut a screen that
+    // does not reflow, and the resize after would not bring it back.
     t.flags.dirty.clear = true;
     return continuation;
 }
