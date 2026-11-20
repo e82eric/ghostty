@@ -1,24 +1,7 @@
-//! Process identity and path conversion for host integration.
+//! Path conversion and quit signaling for host integration.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-
-pub fn identity(pid: if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.pid_t) struct { pid: u64, created: u64 } {
-    if (comptime builtin.os.tag != .windows) return .{ .pid = @intCast(pid), .created = 0 };
-    const Api = struct {
-        extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) u32;
-        extern "kernel32" fn GetProcessTimes(std.os.windows.HANDLE, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME, *std.os.windows.FILETIME) callconv(.winapi) i32;
-    };
-    var created: std.os.windows.FILETIME = undefined;
-    var exited: std.os.windows.FILETIME = undefined;
-    var kernel: std.os.windows.FILETIME = undefined;
-    var user: std.os.windows.FILETIME = undefined;
-    const timestamp = if (Api.GetProcessTimes(pid, &created, &exited, &kernel, &user) != 0)
-        (@as(u64, created.dwHighDateTime) << 32) | created.dwLowDateTime
-    else
-        0;
-    return .{ .pid = Api.GetProcessId(pid), .created = timestamp };
-}
 
 pub fn msysTerminfoPath(alloc: Allocator, path: []const u8) ![]const u8 {
     const drive = path.len >= 3 and std.ascii.isAlphabetic(path[0]) and

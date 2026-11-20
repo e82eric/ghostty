@@ -213,7 +213,9 @@ fn rgb(color: terminal.color.RGB) [3]u8 {
 /// Set up the terminal Termio has just made for this backend.
 pub fn initTerminal(self: *Host, t: *terminal.Terminal) void {
     _ = self;
-    // ConPTY keeps only the active screen; see Exec.initTerminal.
+    // ConPTY maintains only the active screen, without our scrollback.
+    // Keep its viewport contents and cursor coordinates aligned when growing
+    // the grid: add blank rows below instead of pulling history into view.
     if (comptime @import("builtin").os.tag == .windows) {
         t.flags.resize_pull_scrollback = false;
     }

@@ -138,9 +138,6 @@ GHOSTTY_API void ghostty_surface_host_resync(ghostty_surface_t,
    output, where the host's own terminal was resized. */
 GHOSTTY_API void ghostty_surface_host_resized(ghostty_surface_t,
                                               uint16_t cols, uint16_t rows);
-GHOSTTY_API uint64_t ghostty_surface_shell_pid(ghostty_surface_t);
-/* Original shell creation FILETIME on Windows; zero when unavailable. */
-GHOSTTY_API uint64_t ghostty_surface_shell_creation_time(ghostty_surface_t);
 
 // Sends a key using a USB HID usage code instead of a platform-native
 // scancode. This is useful for cross-platform embedders such as winit.

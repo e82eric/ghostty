@@ -37,9 +37,6 @@ pub const Mode = packed struct {
 };
 
 pub const ProcessInfo = enum {
-    /// PID of the original shell launched for this surface.
-    shell_pid,
-    shell_creation_time,
     /// The PID of the process that controls the PTY.
     foreground_pid,
     /// Gets the name of the slave PTY. Returned name points to an internal buffer
@@ -48,7 +45,7 @@ pub const ProcessInfo = enum {
 
     pub fn Type(comptime info: ProcessInfo) type {
         return switch (info) {
-            .foreground_pid, .shell_pid, .shell_creation_time => u64,
+            .foreground_pid => u64,
             .tty_name => [:0]const u8,
         };
     }
@@ -273,7 +270,6 @@ const PosixPty = struct {
     /// is not available on a particular platform.
     pub fn getProcessInfo(self: *PosixPty, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
         return switch (info) {
-            .shell_pid, .shell_creation_time => null,
             .foreground_pid => {
                 switch (builtin.target.os.tag) {
                     .linux => {
@@ -335,14 +331,11 @@ const WindowsPty = struct {
     // Process-wide counter for pipe names
     var pipe_name_counter = std.atomic.Value(u32).init(1);
 
-    const ConPtyApi = @import("os/ConPty.zig");
-
     out_pipe: windows.HANDLE,
     in_pipe: windows.HANDLE,
     out_pipe_pty: windows.HANDLE,
     in_pipe_pty: windows.HANDLE,
     pseudo_console: windows.HPCON,
-    conpty: ConPtyApi,
     size: winsize,
 
     pub const OpenError = error{Unexpected};
@@ -350,8 +343,6 @@ const WindowsPty = struct {
     /// Open a new PTY with the given initial size.
     pub fn open(size: winsize) OpenError!Pty {
         var pty: Pty = undefined;
-        pty.conpty = ConPtyApi.load();
-        errdefer pty.conpty.deinit();
 
         var pipe_path_buf: [128]u8 = undefined;
         var pipe_path_buf_w: [128]u16 = undefined;
@@ -450,7 +441,7 @@ const WindowsPty = struct {
         try SetHandleInformation.f(pty.out_pipe);
         try SetHandleInformation.f(pty.out_pipe_pty);
 
-        const result = pty.conpty.create(
+        const result = windows.exp.kernel32.CreatePseudoConsole(
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
             pty.in_pipe_pty,
             pty.out_pipe_pty,
@@ -468,8 +459,7 @@ const WindowsPty = struct {
         _ = windows.exp.kernel32.CloseHandle(self.in_pipe);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe_pty);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe);
-        self.conpty.close(self.pseudo_console);
-        self.conpty.deinit();
+        _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
         self.* = undefined;
     }
 
@@ -484,7 +474,7 @@ const WindowsPty = struct {
 
     /// Set the size of the pty.
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-        const result = self.conpty.resize(
+        const result = windows.exp.kernel32.ResizePseudoConsole(
             self.pseudo_console,
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
         );

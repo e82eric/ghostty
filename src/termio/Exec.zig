@@ -65,13 +65,6 @@ pub fn deinit(self: *Exec) void {
 /// after termio begins because it may put the internal terminal state
 /// into a bad state.
 pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
-    // ConPTY maintains only the active screen, without our scrollback.
-    // Keep its viewport contents and cursor coordinates aligned when growing
-    // the grid: add blank rows below instead of pulling history into view.
-    if (comptime builtin.os.tag == .windows) {
-        term.flags.resize_pull_scrollback = false;
-    }
-
     // If we have an initial pwd requested by the subprocess, then we
     // set that on the terminal now. This allows rapidly initializing
     // new surfaces to use the proper pwd.
@@ -605,8 +598,6 @@ pub const Subprocess = struct {
     screen_size: renderer.ScreenSize,
     pty: ?Pty = null,
     process: ?Process = null,
-    original_pid: std.atomic.Value(u64) = .init(0),
-    original_created: std.atomic.Value(u64) = .init(0),
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -1098,11 +1089,6 @@ pub const Subprocess = struct {
         log.info("started subcommand path={s} pid={?}", .{ self.args[0], cmd.pid });
 
         self.process = .{ .fork_exec = cmd };
-        if (cmd.pid) |pid| {
-            const identity = @import("host_process.zig").identity(pid);
-            self.original_created.store(identity.created, .release);
-            self.original_pid.store(identity.pid, .release);
-        }
         return switch (builtin.target.os.tag) {
             .windows => .{
                 .read = pty.out_pipe,
@@ -1283,14 +1269,6 @@ pub const Subprocess = struct {
     /// Returns `null` if there was an error getting the information or the
     /// information is not available on a particular platform.
     pub fn getProcessInfo(self: *Subprocess, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
-        if (info == .shell_pid) {
-            const pid = self.original_pid.load(.acquire);
-            return if (pid == 0) null else pid;
-        }
-        if (info == .shell_creation_time) {
-            const created = self.original_created.load(.acquire);
-            return if (created == 0) null else created;
-        }
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }

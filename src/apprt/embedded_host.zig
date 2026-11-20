@@ -225,13 +225,6 @@ export fn ghostty_surface_host_wheel_wants_history(surface: *Surface) bool {
     return !(core.config.mouse_reporting and t.flags.mouse_event != .none);
 }
 
-export fn ghostty_surface_shell_pid(surface: *Surface) u64 {
-    return surface.core_surface.getProcessInfo(.shell_pid) orelse 0;
-}
-export fn ghostty_surface_shell_creation_time(surface: *Surface) u64 {
-    return surface.core_surface.getProcessInfo(.shell_creation_time) orelse 0;
-}
-
 /// Send a key event identified by its USB HID usage code. This avoids
 /// requiring cross-platform embedders to reproduce Ghostty's native
 /// keycode tables.
