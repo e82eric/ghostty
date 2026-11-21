@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const lib = @import("../lib.zig");
 const build_options = @import("terminal_options");
 const Result = @import("result.zig").Result;
+const snapshot_envelope = @import("../snapshot/envelope.zig");
 
 const log = std.log.scoped(.build_info_c);
 
@@ -36,6 +37,7 @@ pub const BuildInfo = enum(c_int) {
     feature_color = 17,
     feature_grid_introspection = 18,
     feature_glyph_protocol = 19,
+    snapshot_version = 20,
 
     _,
 
@@ -59,6 +61,7 @@ pub const BuildInfo = enum(c_int) {
             .optimize => OptimizeMode,
             .version_string, .version_pre, .version_build => lib.String,
             .version_major, .version_minor, .version_patch => usize,
+            .snapshot_version => u16,
             _ => void,
         };
     }
@@ -132,6 +135,7 @@ fn getTyped(
         .feature_color => out.* = lib.feature(.color),
         .feature_grid_introspection => out.* = lib.feature(.grid_introspection),
         .feature_glyph_protocol => out.* = lib.feature(.glyph_protocol),
+        .snapshot_version => out.* = snapshot_envelope.version,
         _ => comptime unreachable,
     }
 
@@ -170,6 +174,13 @@ test "get feature keys" {
         try testing.expectEqual(Result.success, get(case[0], @ptrCast(&value)));
         try testing.expectEqual(case[1], value);
     }
+}
+
+test "get snapshot_version" {
+    const testing = std.testing;
+    var value: u16 = 0;
+    try testing.expectEqual(Result.success, get(.snapshot_version, @ptrCast(&value)));
+    try testing.expectEqual(snapshot_envelope.version, value);
 }
 
 test "get tmux_control_mode" {

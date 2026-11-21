@@ -2016,6 +2016,7 @@
         "FEATURE_COLOR": 17,
         "FEATURE_GRID_INTROSPECTION": 18,
         "FEATURE_GLYPH_PROTOCOL": 19,
+        "SNAPSHOT_VERSION": 20,
         "MAX_VALUE": 2147483647
       },
       "keys": {
@@ -2094,6 +2095,10 @@
         "FEATURE_GLYPH_PROTOCOL": {
           "direction": "out",
           "type": "bool"
+        },
+        "SNAPSHOT_VERSION": {
+          "direction": "out",
+          "type": "u16"
         }
       }
     },

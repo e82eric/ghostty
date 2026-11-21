@@ -212,6 +212,17 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Output type: bool *
    */
   GHOSTTY_BUILD_INFO_FEATURE_GLYPH_PROTOCOL = 19,
+
+  /**
+   * The version of the snapshot byte format this library writes, and the
+   * only one it reads: the number after the magic at the start of every
+   * snapshot. Two libraries can exchange snapshots when theirs are equal.
+   * It is the same whether or not the build includes the `%snapshot`
+   * feature.
+   *
+   * Output type: uint16_t *
+   */
+  GHOSTTY_BUILD_INFO_SNAPSHOT_VERSION = 20,
   GHOSTTY_BUILD_INFO_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyBuildInfo;
 

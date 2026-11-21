@@ -134,6 +134,11 @@ GHOSTTY_API void ghostty_surface_host_output(ghostty_surface_t,
    from the thread that feeds output. */
 GHOSTTY_API void ghostty_surface_host_resync(ghostty_surface_t,
                                              const uint8_t* snapshot, size_t len);
+/* The version of the snapshot byte format this library reads: the number
+   after the magic at the start of every snapshot. It is what libghostty-vt
+   reports as GHOSTTY_BUILD_INFO_SNAPSHOT_VERSION, so a host can tell
+   whether snapshots encoded by another build can be passed here. */
+GHOSTTY_API uint16_t ghostty_snapshot_format_version(void);
 /* Resize an ordered surface's terminal. Call it from the thread that feeds
    output, where the host's own terminal was resized. */
 GHOSTTY_API void ghostty_surface_host_resized(ghostty_surface_t,

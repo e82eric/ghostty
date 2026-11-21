@@ -202,6 +202,13 @@ export fn ghostty_surface_host_resync(surface: *Surface, ptr: [*]const u8, len: 
     @import("../termio.zig").Host.resync(io, ptr[0..len]);
 }
 
+/// The version of the snapshot byte format this library reads: the number
+/// after the magic at the start of every snapshot. A host asks before it
+/// passes snapshots that another library encoded.
+export fn ghostty_snapshot_format_version() u16 {
+    return terminal.snapshot.envelope.version;
+}
+
 /// Resize the terminal of an ordered host-backed surface. Call it from the
 /// thread that feeds output.
 export fn ghostty_surface_host_resized(surface: *Surface, cols: u16, rows: u16) void {

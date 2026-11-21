@@ -15,7 +15,9 @@ call, or in pieces if you want the terminal on screen first.
 
 The snapshot byte format is versioned separately from the library and isn't
 covered by the ABI promise in @ref stability. Snapshot format version 1 is a work
-in progress and doesn't carry a binary-compatibility guarantee.
+in progress and doesn't carry a binary-compatibility guarantee. To learn which
+version a library writes and reads, query #GHOSTTY_BUILD_INFO_SNAPSHOT_VERSION
+with ghostty_build_info().
 
 ## Encoding {#guide-snapshots-encoding}
 
