@@ -73,9 +73,71 @@ GHOSTTY_API bool ghostty_surface_take_gpu_frame(ghostty_surface_t,
                                                 ghostty_gpu_frame_s*);
 GHOSTTY_API bool ghostty_surface_read_font(ghostty_surface_t, bool bold, ghostty_font_data_s*);
 GHOSTTY_API void ghostty_font_data_free(ghostty_font_data_s*);
-GHOSTTY_API uint64_t ghostty_surface_shell_pid(ghostty_surface_t);
-/* Original shell creation FILETIME on Windows; zero when unavailable. */
-GHOSTTY_API uint64_t ghostty_surface_shell_creation_time(ghostty_surface_t);
+typedef struct {
+  const char* key;
+  const char* value;
+} ghostty_host_env_s;
+/* The process a surface would have started had it owned one. */
+typedef struct {
+  /* A Windows command line; elsewhere the arguments joined the same way. */
+  const char* command;
+  const char* cwd; /* may be NULL */
+  const ghostty_host_env_s* env;
+  size_t env_len;
+} ghostty_host_spawn_s;
+/* The configuration that changes how a terminal parses or what it answers. */
+typedef struct {
+  uint8_t palette[256][3];
+  uint8_t foreground[3];
+  uint8_t background[3];
+  uint8_t cursor[3];
+  bool has_cursor;
+  uint8_t cursor_style; /* 0 bar, 1 block, 2 underline, 3 hollow block */
+  int8_t cursor_blink;  /* -1 when left to the program */
+  bool dark;
+  uint64_t image_storage_limit;
+  /* The rest is known only when the surface is created. */
+  bool has_creation;
+  bool grapheme_cluster;
+  uint64_t scrollback_bytes; /* UINT64_MAX for no limit */
+  uint64_t scrollback_lines;
+  /* How the surface's terminal names itself. */
+  char xtversion[96];  /* NUL-terminated */
+  char enquiry[128];   /* NUL-terminated, cut to fit */
+  uint16_t da_conformance;
+  uint16_t da_features[4];
+  uint16_t da_features_len;
+  uint16_t da_secondary[3];
+} ghostty_host_settings_s;
+/* A backend driven by the host: no pty and no child process. */
+typedef struct {
+  void* userdata;
+  /* Bytes for the pty: encoded input and query replies. */
+  void (*write)(void* userdata, const uint8_t* bytes, size_t len);
+  void (*resize)(void* userdata, uint16_t cols, uint16_t rows,
+                 uint32_t width_px, uint32_t height_px);
+  /* Called once while the surface is created, on the creating thread. The
+     pointers are valid only during the call. */
+  void (*spawn)(void* userdata, const ghostty_host_spawn_s*);
+  /* Called while the surface is created and, from its IO thread, whenever
+     the configuration changes. */
+  void (*settings)(void* userdata, const ghostty_host_settings_s*);
+  /* The host resizes the surface's terminal, with
+     ghostty_surface_host_resized; the surface never reflows on its own. */
+  bool ordered;
+} ghostty_host_backend_s;
+/* A surface gets this backend when ghostty_surface_config_s.host_backend
+   points at one while the surface is created. It is copied. */
+GHOSTTY_API void ghostty_surface_host_output(ghostty_surface_t,
+                                             const uint8_t* bytes, size_t len);
+/* Replace the surface's terminal by a snapshot's visible screen. Call it
+   from the thread that feeds output. */
+GHOSTTY_API void ghostty_surface_host_resync(ghostty_surface_t,
+                                             const uint8_t* snapshot, size_t len);
+/* Resize an ordered surface's terminal. Call it from the thread that feeds
+   output, where the host's own terminal was resized. */
+GHOSTTY_API void ghostty_surface_host_resized(ghostty_surface_t,
+                                              uint16_t cols, uint16_t rows);
 
 // Sends a key using a USB HID usage code instead of a platform-native
 // scancode. This is useful for cross-platform embedders such as winit.
@@ -95,6 +157,20 @@ GHOSTTY_API bool ghostty_surface_key_usb(ghostty_surface_t,
  * updating its own terminal without changing the captured contents. */
 GHOSTTY_API bool ghostty_surface_snapshot_begin(ghostty_surface_t,
                                                    uint64_t* generation);
+
+/** Whether a wheel scroll over a host-backed surface asks for history. Such
+ * a surface keeps none: the host shows its own, with
+ * ghostty_surface_snapshot_begin_from. False when the program takes the
+ * wheel, when a frozen snapshot is already shown, and for other backends. */
+GHOSTTY_API bool ghostty_surface_host_wheel_wants_history(ghostty_surface_t);
+
+/** As ghostty_surface_snapshot_begin, presenting the terminal in a whole
+ * encoded snapshot, fitted to the surface, instead of a copy of the
+ * surface's own. For a host whose own terminal holds the history. */
+GHOSTTY_API bool ghostty_surface_snapshot_begin_from(ghostty_surface_t,
+                                                     const uint8_t* snapshot,
+                                                     size_t len,
+                                                     uint64_t* generation);
 
 /** End frozen snapshot presentation and reveal the newest live state. */
 GHOSTTY_API bool ghostty_surface_snapshot_end(ghostty_surface_t,

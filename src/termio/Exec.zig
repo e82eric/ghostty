@@ -65,13 +65,6 @@ pub fn deinit(self: *Exec) void {
 /// after termio begins because it may put the internal terminal state
 /// into a bad state.
 pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
-    // ConPTY maintains only the active screen, without our scrollback.
-    // Keep its viewport contents and cursor coordinates aligned when growing
-    // the grid: add blank rows below instead of pulling history into view.
-    if (comptime builtin.os.tag == .windows) {
-        term.flags.resize_pull_scrollback = false;
-    }
-
     // If we have an initial pwd requested by the subprocess, then we
     // set that on the terminal now. This allows rapidly initializing
     // new surfaces to use the proper pwd.
@@ -593,7 +586,8 @@ pub const Config = struct {
     rt_post_fork_info: Command.RtPostForkInfo,
 };
 
-const Subprocess = struct {
+/// Public so the host backend can describe the process it does not start.
+pub const Subprocess = struct {
     const c = @import("posix_c");
 
     arena: std.heap.ArenaAllocator,
@@ -604,8 +598,6 @@ const Subprocess = struct {
     screen_size: renderer.ScreenSize,
     pty: ?Pty = null,
     process: ?Process = null,
-    original_pid: std.atomic.Value(u64) = .init(0),
-    original_created: std.atomic.Value(u64) = .init(0),
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -1097,11 +1089,6 @@ const Subprocess = struct {
         log.info("started subcommand path={s} pid={?}", .{ self.args[0], cmd.pid });
 
         self.process = .{ .fork_exec = cmd };
-        if (cmd.pid) |pid| {
-            const identity = @import("host_process.zig").identity(pid);
-            self.original_created.store(identity.created, .release);
-            self.original_pid.store(identity.pid, .release);
-        }
         return switch (builtin.target.os.tag) {
             .windows => .{
                 .read = pty.out_pipe,
@@ -1282,14 +1269,6 @@ const Subprocess = struct {
     /// Returns `null` if there was an error getting the information or the
     /// information is not available on a particular platform.
     pub fn getProcessInfo(self: *Subprocess, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
-        if (info == .shell_pid) {
-            const pid = self.original_pid.load(.acquire);
-            return if (pid == 0) null else pid;
-        }
-        if (info == .shell_creation_time) {
-            const created = self.original_created.load(.acquire);
-            return if (created == 0) null else created;
-        }
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }
@@ -2013,14 +1992,14 @@ fn execCommand(
                 // (extra process in the tree, per-process cmd AutoRun
                 // state not reaching the user's actual shell).
                 //
-                // Values with arguments are split on whitespace. This
-                // does not honor Windows CLI quoting rules; users who
-                // need quoted arguments should use the direct command
-                // form, which takes an argv array as-is.
+                // Values with arguments are split as Windows programs
+                // split their own command lines: on whitespace, except
+                // inside double quotes, so a program or an argument with
+                // a space in it can be written in quotes.
                 //
                 // Note we don't free any of the memory below since it is
                 // allocated in the arena.
-                if (std.mem.indexOfAny(u8, v, " \t") == null) {
+                if (std.mem.indexOfAny(u8, v, " \t\"") == null) {
                     // No arguments. If the shell is literally "cmd.exe"
                     // (the default), resolve via %COMSPEC% which is the
                     // documented path to the current command processor.
@@ -2033,10 +2012,7 @@ fn execCommand(
                         try alloc.dupe(u8, v);
                     try args.append(alloc, try alloc.dupeSentinel(u8, argv0, 0));
                 } else {
-                    var it = std.mem.tokenizeAny(u8, v, " \t");
-                    while (it.next()) |tok| {
-                        try args.append(alloc, try alloc.dupeSentinel(u8, tok, 0));
-                    }
+                    try splitWindowsCommandLine(alloc, v, &args);
                 }
                 break :shell try args.toOwnedSlice(alloc);
             } else {
@@ -2296,6 +2272,91 @@ test "execCommand windows: bare non-cmd shell is passed through" {
 
     try testing.expectEqual(1, result.len);
     try testing.expectEqualStrings("pwsh.exe", result[0]);
+}
+
+/// Splits a command line into its arguments by the rules Windows programs
+/// read theirs with: whitespace separates arguments except inside double
+/// quotes, backslashes are themselves unless they come before a quote, where
+/// each pair is one backslash and an odd one makes the quote part of the
+/// argument. `Command.windowsCreateCommandLine` is the inverse.
+fn splitWindowsCommandLine(
+    alloc: Allocator,
+    line: []const u8,
+    args: *std.ArrayList([:0]const u8),
+) Allocator.Error!void {
+    var arg: std.ArrayList(u8) = .empty;
+    defer arg.deinit(alloc);
+    var quoted = false;
+    // An argument can be empty, written `""`.
+    var started = false;
+    var i: usize = 0;
+    while (i < line.len) {
+        const c = line[i];
+        if (c == '\\') {
+            var count: usize = 0;
+            while (i + count < line.len and line[i + count] == '\\') count += 1;
+            i += count;
+            started = true;
+            if (i < line.len and line[i] == '"') {
+                try arg.appendNTimes(alloc, '\\', count / 2);
+                if (count % 2 == 1) {
+                    try arg.append(alloc, '"');
+                    i += 1;
+                }
+            } else {
+                try arg.appendNTimes(alloc, '\\', count);
+            }
+            continue;
+        }
+        i += 1;
+        if (c == '"') {
+            quoted = !quoted;
+            started = true;
+        } else if ((c == ' ' or c == '\t') and !quoted) {
+            if (started) {
+                try args.append(alloc, try alloc.dupeSentinel(u8, arg.items, 0));
+                arg.clearRetainingCapacity();
+                started = false;
+            }
+        } else {
+            try arg.append(alloc, c);
+            started = true;
+        }
+    }
+    if (started) try args.append(alloc, try alloc.dupeSentinel(u8, arg.items, 0));
+}
+
+test "execCommand windows: quoted arguments keep their spaces" {
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try execCommand(alloc, .{
+        .shell = "\"C:\\Program Files\\Git\\usr\\bin\\less.exe\" -R  \"my \\\"notes\\\".txt\" \"\" C:\\dir\\",
+    }, struct {
+        fn get(_: Allocator) !PasswdEntry {
+            return .{};
+        }
+    });
+
+    try testing.expectEqual(5, result.len);
+    try testing.expectEqualStrings("C:\\Program Files\\Git\\usr\\bin\\less.exe", result[0]);
+    try testing.expectEqualStrings("-R", result[1]);
+    try testing.expectEqualStrings("my \"notes\".txt", result[2]);
+    try testing.expectEqualStrings("", result[3]);
+    try testing.expectEqualStrings("C:\\dir\\", result[4]);
+
+    // A program alone in quotes is the program, without them.
+    const alone = try execCommand(alloc, .{ .shell = "\"C:\\Program Files\\x.exe\"" }, struct {
+        fn get(_: Allocator) !PasswdEntry {
+            return .{};
+        }
+    });
+    try testing.expectEqual(1, alone.len);
+    try testing.expectEqualStrings("C:\\Program Files\\x.exe", alone[0]);
 }
 
 test "execCommand windows: shell with args is split on whitespace" {

@@ -646,6 +646,22 @@ export fn ghostty_surface_snapshot_begin(
     return true;
 }
 
+export fn ghostty_surface_snapshot_begin_from(
+    surface: *Surface,
+    ptr: [*]const u8,
+    len: usize,
+    generation: *u64,
+) bool {
+    @import("../c_api_error.zig").clear();
+    surface.core_surface.snapshot.beginFrom(&surface.core_surface, ptr[0..len]) catch |err| {
+        @import("../c_api_error.zig").set(err);
+        log.warn("error beginning snapshot presentation from bytes err={}", .{err});
+        return false;
+    };
+    generation.* = surface.core_surface.snapshot.generation;
+    return true;
+}
+
 export fn ghostty_surface_snapshot_end(
     surface: *Surface,
     generation: u64,

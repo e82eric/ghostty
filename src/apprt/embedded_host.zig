@@ -185,11 +185,44 @@ export fn ghostty_surface_live_cursor_free(result: *LiveCursor) void {
     result.* = .{};
 }
 
-export fn ghostty_surface_shell_pid(surface: *Surface) u64 {
-    return surface.core_surface.getProcessInfo(.shell_pid) orelse 0;
+/// Feed output to a surface with a host-driven backend. Safe to call from
+/// any thread while the surface is alive.
+export fn ghostty_surface_host_output(surface: *Surface, ptr: [*]const u8, len: usize) void {
+    if (len == 0) return;
+    const io = &surface.core_surface.io;
+    if (io.backend != .host) return;
+    io.processOutput(ptr[0..len]);
 }
-export fn ghostty_surface_shell_creation_time(surface: *Surface) u64 {
-    return surface.core_surface.getProcessInfo(.shell_creation_time) orelse 0;
+
+/// Replace the terminal of a surface with a host-driven backend by a
+/// snapshot's visible screen. Call it from the thread that feeds output.
+export fn ghostty_surface_host_resync(surface: *Surface, ptr: [*]const u8, len: usize) void {
+    const io = &surface.core_surface.io;
+    if (io.backend != .host) return;
+    @import("../termio.zig").Host.resync(io, ptr[0..len]);
+}
+
+/// Resize the terminal of an ordered host-backed surface. Call it from the
+/// thread that feeds output.
+export fn ghostty_surface_host_resized(surface: *Surface, cols: u16, rows: u16) void {
+    const io = &surface.core_surface.io;
+    if (io.backend != .host or cols == 0 or rows == 0) return;
+    @import("../termio.zig").Host.resized(io, cols, rows);
+}
+
+/// Whether a wheel scroll over a host-backed surface asks for history: the
+/// surface keeps none, so the host has to show its own. False when the
+/// program takes the wheel (mouse reporting, or the alternate screen), when
+/// a frozen snapshot is already shown, and for other backends.
+export fn ghostty_surface_host_wheel_wants_history(surface: *Surface) bool {
+    const core = &surface.core_surface;
+    if (core.io.backend != .host) return false;
+    core.renderer_state.mutex.lockUncancelable(global.io());
+    defer core.renderer_state.mutex.unlock(global.io());
+    if (core.snapshot.terminal != null) return false;
+    const t = &core.io.terminal;
+    if (t.screens.active_key == .alternate) return false;
+    return !(core.config.mouse_reporting and t.flags.mouse_event != .none);
 }
 
 /// Send a key event identified by its USB HID usage code. This avoids

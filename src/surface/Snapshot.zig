@@ -22,13 +22,32 @@ fn capture(_: *Snapshot, surface: *Surface) !*terminalpkg.Terminal {
     );
     return result;
 }
+/// A frozen terminal decoded from a whole encoded snapshot, fitted to the
+/// surface.
+fn decode(surface: *Surface, bytes: []const u8) !*terminalpkg.Terminal {
+    const result = try surface.alloc.create(terminalpkg.Terminal);
+    errdefer surface.alloc.destroy(result);
+    result.* = try terminalpkg.PresentationSnapshot.decode(
+        surface.alloc,
+        global.io(),
+        bytes,
+        surface.renderer_state.terminal,
+    );
+    return result;
+}
 /// Enter frozen presentation mode. Repeated calls retain the current
 /// snapshot so its coordinates remain stable.
 pub fn begin(self: *Snapshot, surface: *Surface) !void {
+    return self.beginFrom(surface, null);
+}
+
+/// As `begin`, presenting the terminal in `bytes` instead of a copy of the
+/// surface's own when bytes are given.
+pub fn beginFrom(self: *Snapshot, surface: *Surface, bytes: ?[]const u8) !void {
     surface.renderer_state.mutex.lockUncancelable(global.io());
     defer surface.renderer_state.mutex.unlock(global.io());
     if (self.terminal != null) return;
-    const frozen = try self.capture(surface);
+    const frozen = if (bytes) |v| try decode(surface, v) else try self.capture(surface);
     self.terminal = frozen;
     surface.renderer_state.presentation_terminal = frozen;
     self.text_row_anchor = null;

@@ -687,8 +687,7 @@ pub fn init(
             break :termio_env env;
         };
 
-        // Initialize our IO backend
-        var io_exec = try termio.Exec.init(alloc, .{
+        const exec_config: termio.Exec.Config = .{
             .command = command,
             .env = env,
             .env_override = config.env,
@@ -700,8 +699,23 @@ pub fn init(
             .term = config.term,
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
-        });
-        errdefer io_exec.deinit();
+        };
+
+        // Initialize our IO backend. A surface whose options named a host
+        // backend has no process of its own: the host starts it, so it is
+        // told what that would have been. Only the embedded runtime can be
+        // asked for one.
+        const host_backend: ?termio.Host = if (@hasDecl(apprt.runtime.Surface, "takeHostBackend"))
+            rt_surface.takeHostBackend()
+        else
+            null;
+        var io_backend: termio.Backend = if (host_backend) |asked| host: {
+            var io_host = asked;
+            io_host.terminal_alloc = alloc;
+            try io_host.describeSpawn(alloc, exec_config);
+            break :host .{ .host = io_host };
+        } else .{ .exec = try termio.Exec.init(alloc, exec_config) };
+        errdefer io_backend.deinit();
 
         // Initialize our IO mailbox
         var io_mailbox = try termio.Mailbox.initSPSC(alloc);
@@ -715,7 +729,7 @@ pub fn init(
             .size = size,
             .full_config = config,
             .config = io_config,
-            .backend = .{ .exec = io_exec },
+            .backend = io_backend,
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
             .renderer_wakeup = &self.renderer_thread.wakeup,
@@ -1390,6 +1404,7 @@ fn childExitedAbnormally(
     // Build up our command for the error message
     const command = try std.mem.join(alloc, " ", switch (self.io.backend) {
         .exec => |*exec| exec.subprocess.args,
+        .host => &.{},
     });
     const runtime_str = try alloc.print("{d} ms", .{info.runtime_ms});
 

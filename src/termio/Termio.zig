@@ -275,7 +275,12 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         break :opts .{
             .cols = grid_size.columns,
             .rows = grid_size.rows,
-            .max_scrollback_bytes = opts.full_config.@"scrollback-limit-bytes".optional(),
+            // A host-backed surface mirrors a screen. Its host holds the
+            // history and is told the configured limits.
+            .max_scrollback_bytes = if (opts.backend == .host)
+                (if (opts.backend.host.callbacks.ordered) termio.Host.ordered_history_bytes else 0)
+            else
+                opts.full_config.@"scrollback-limit-bytes".optional(),
             .max_scrollback_lines = opts.full_config.@"scrollback-limit-lines".optional(),
             .default_modes = default_modes,
             .default_cursor_style = opts.config.cursor_style,
@@ -308,6 +313,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
     // Setup our backend.
     var backend = opts.backend;
     backend.initTerminal(&term);
+    if (backend == .host) backend.host.reportSettings(&opts.config, opts.full_config);
 
     // Create our stream handler. This points to memory in self so it
     // isn't safe to use until self.* is set.
@@ -325,6 +331,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .clipboard_write_limit = opts.config.clipboard_write_limit,
         .enquiry_response = opts.config.enquiry_response,
         .xt_checksum_report = opts.config.xt_checksum_report,
+        .drop_replies = backend == .host,
     };
 
     const thread_enter_state = try ThreadEnterState.create(
@@ -480,6 +487,7 @@ pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !voi
     // from another thread.
     self.terminal_stream.handler.changeConfig(&self.config);
     td.backend.changeConfig(&self.config);
+    if (self.backend == .host) self.backend.host.reportSettings(&self.config, null);
 
     // Update the configuration that we know about.
     //
@@ -526,8 +534,21 @@ pub fn resize(
     td: *ThreadData,
     size: renderer.Size,
 ) !void {
-    self.size = size;
     const grid_size = size.grid();
+
+    // The host resizes an ordered surface's terminal, where its own was.
+    if (self.backend == .host and self.backend.host.callbacks.ordered) {
+        {
+            self.renderer_state.mutex.lockUncancelable(global.io());
+            defer self.renderer_state.mutex.unlock(global.io());
+            self.size = size;
+        }
+        try self.backend.resize(grid_size, size.terminal());
+        _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
+        self.renderer_wakeup.notify() catch {};
+        return;
+    }
+    self.size = size;
 
     // Enter the critical area that we want to keep small
     {
@@ -592,6 +613,8 @@ pub fn sizeReport(self: *Termio, td: *ThreadData, style: termio.Message.SizeRepo
 }
 
 fn sizeReportLocked(self: *Termio, td: *ThreadData, style: termio.Message.SizeReport) !void {
+    // The host's own terminal reports its size to the program.
+    if (self.backend == .host) return;
     const grid_size = self.size.grid();
     const report_size: terminalpkg.size_report.Size = .{
         .rows = grid_size.rows,
@@ -808,6 +831,8 @@ pub fn colorSchemeReport(self: *Termio, td: *ThreadData, force: bool) !void {
 }
 
 pub fn colorSchemeReportLocked(self: *Termio, td: *ThreadData, force: bool) !void {
+    // The host's own terminal reports the scheme to the program.
+    if (self.backend == .host) return;
     if (!force and !self.renderer_state.terminal.modes.get(.report_color_scheme)) {
         return;
     }
